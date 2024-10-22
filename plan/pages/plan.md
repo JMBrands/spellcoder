@@ -1,3 +1,3 @@
 - Physics: Noita-inspired
 - Spellbuilding: scripting
-- 2.5D like TTD
+- 3D voxel based, first person
