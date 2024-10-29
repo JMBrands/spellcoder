@@ -1,4 +1,4 @@
-use std::f32::consts::PI;
+use std::{f32::consts::PI, i8};
 
 use raylib::prelude::*;
 
@@ -81,6 +81,8 @@ struct Voxel {
     y: i64,
     z: i64,
     color: ffi::Color,
+    visible_faces: Vec<i8> // Vector with face indices for every face that's visible, the other faces will not be drawn.
+    // 0 = down 1 = up 2 = north 3 = south 5 = east 6 = west
 }
 
 trait VoxelDraw {
@@ -88,26 +90,61 @@ trait VoxelDraw {
 }
 impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
     fn draw_voxel(&mut self, voxel: Voxel) {
-        // does what it says on the tin
-        self.draw_cube(
-            Vector3 {
-                x: voxel.x as f32 + 0.5,
-                y: voxel.y as f32 + 0.5,
-                z: voxel.z as f32 + 0.5,
-            },
-            1.0,
-            1.0,
-            1.0,
-            voxel.color,
-        );
+        let position = Vector3::new(voxel.x as f32, voxel.y as f32, voxel.z as f32);
+        for face in voxel.visible_faces {
+            match face {
+                0 => self.draw_triangle_strip3D(&[
+                    position + Vector3::forward() + Vector3::right(),
+                    position + Vector3::forward(),
+                    position + Vector3::right(),
+                    position,
+                ], voxel.color),
+                1 => self.draw_triangle_strip3D(&[
+                    position + Vector3::up(),
+                    position + Vector3::forward() + Vector3::up(),
+                    position + Vector3::right() + Vector3::up(),
+                    position + Vector3::forward() + Vector3::right() + Vector3::up(),
+                ], voxel.color),
+                2 => self.draw_triangle_strip3D(&[
+                    position + Vector3::forward() + Vector3::up(),
+                    position + Vector3::up(),
+                    position + Vector3::forward(),
+                    position,
+                ], voxel.color),
+                3 => self.draw_triangle_strip3D(&[
+                    position + Vector3::right(),
+                    position + Vector3::up() + Vector3::right(),
+                    position + Vector3::forward() + Vector3::right(),
+                    position + Vector3::forward() + Vector3::up() + Vector3::right(),
+                ], voxel.color),
+                4 => self.draw_triangle_strip3D(&[
+                    position + Vector3::up() + Vector3::right(),
+                    position + Vector3::right(),
+                    position + Vector3::up(),
+                    position,
+                ], voxel.color),
+                5 => self.draw_triangle_strip3D(&[
+                    position + Vector3::forward(),
+                    position + Vector3::right() + Vector3::forward(),
+                    position + Vector3::up() + Vector3::forward(),
+                    position + Vector3::up() + Vector3::right() + Vector3::forward(),
+                ], voxel.color),
+                i8::MIN..=-1_i8 | 6_i8..=i8::MAX => ()
+            }
+        }
     }
 }
 
 
 fn main() {
     // set up window
-    let (mut rl, thread) = raylib::init().size(640, 480).title("Spellcoder").build();
-    rl.set_target_fps(60);
+    let (mut rl, thread) = raylib::init()
+        // .fullscreen()
+        .vsync()
+        .size(640, 480)
+        .title("Spellcoder")
+        .build();
+    // rl.set_target_fps(60);
     rl.disable_cursor();
     // set up player
     let mut player = Player::new(Vector3::zero());
@@ -115,8 +152,7 @@ fn main() {
         x: -3.0 * PI / 4.0,
         y: -0.5,
     });
-    let mut i = 0;
-    let mut j = 0;
+
     // mainloop
     while !rl.window_should_close() {
         let delta = rl.get_frame_time();
@@ -171,7 +207,6 @@ fn main() {
 
         // set up drawing
         let mut d = rl.begin_drawing(&thread);
-
         d.clear_background(Color::BLACK);
         // use d for 2d drawing here (background)
 
@@ -184,12 +219,14 @@ fn main() {
             y: 0,
             z: 0,
             color: Color::from_hex("0080FF").unwrap().into(),
+            visible_faces: vec![0,1,2,3,4,5]
         });
         d3d.draw_voxel(Voxel {
             x: 2,
             y: 0,
             z: 0,
             color: Color::from_hex("FF8000").unwrap().into(),
+            visible_faces: vec![0,1,2,3,4,5]
         });
 
         d3d.draw_bounding_box(BoundingBox {min: player.position, max: player.position + player.size}, Color::WHITE);
@@ -197,9 +234,5 @@ fn main() {
         // use d for 2d drawing here (overlay)
 
         d.draw_fps(10, 10);
-        i += 1;
-        if i % 2 == 0 {
-            j += 1;
-        }
     }
 }
