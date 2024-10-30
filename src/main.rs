@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, i8};
+use std::{cmp::Ordering, f32::consts::PI, fmt::{self, Debug}, i8};
 
 use raylib::prelude::*;
 
@@ -78,20 +78,36 @@ impl Player {
 
 struct Voxel {
     x: i64,
-    y: i64,
+    y: i8,
     z: i64,
     color: ffi::Color,
     visible_faces: Vec<i8> // Vector with face indices for every face that's visible, the other faces will not be drawn.
     // 0 = down 1 = up 2 = north 3 = south 5 = east 6 = west
 }
+impl Debug for Voxel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Voxel")
+         .field("x", &self.x)
+         .field("y", &self.y)
+         .field("z", &self.z)
+         .field("color", &self.color)
+         .field("visible_faces", &self.visible_faces)
+         .finish()
+    }
+}
+impl Voxel {
+    fn compare_by_z(&self, b: &Voxel) -> Ordering {
+        self.z.cmp(&b.z)
+    }
+}
 
 trait VoxelDraw {
-    fn draw_voxel(&mut self, voxel: Voxel);
+    fn draw_voxel(&mut self, voxel: &Voxel);
 }
 impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
-    fn draw_voxel(&mut self, voxel: Voxel) {
+    fn draw_voxel(&mut self, voxel: &Voxel) {
         let position = Vector3::new(voxel.x as f32, voxel.y as f32, voxel.z as f32);
-        for face in voxel.visible_faces {
+        for face in &voxel.visible_faces {
             match face {
                 0 => self.draw_triangle_strip3D(&[
                     position + Vector3::forward() + Vector3::right(),
@@ -135,6 +151,39 @@ impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
     }
 }
 
+struct Chunk {
+    voxels: Vec<Vec<Vec<Voxel>>>,
+    x: i64,
+    z: i64 
+}
+impl Chunk {
+    fn new(x: i64, z: i64) -> Chunk {
+        let mut voxels: Vec<Vec<Vec<Voxel>>> = Vec::new();
+        for y in i8::MIN..i8::MAX {
+            let mut layer: Vec<Vec<Voxel>> = Vec::new();
+            for x in 0..16 {
+                layer.push(Vec::new() as Vec<Voxel>);
+            }
+            voxels.push(layer);
+        }
+        Chunk {
+            voxels,
+            x,
+            z
+        }
+    }
+
+    fn add_voxel(&mut self, voxel: Voxel) {
+        let x = (voxel.x - self.x).abs() as usize;
+        let y = voxel.y as usize + 128;
+        self.voxels[y][x].push(voxel);
+        self.voxels[y][x].sort_by(|a, b| a.compare_by_z(b));
+    }
+}
+
+struct World {
+    chunks: Vec<Chunk>,
+}
 
 fn main() {
     // set up window
@@ -152,7 +201,22 @@ fn main() {
         x: -3.0 * PI / 4.0,
         y: -0.5,
     });
-
+    let mut chunk0 = Chunk::new(0,0);
+    chunk0.add_voxel( Voxel {
+            x: 2,
+            y: 0,
+            z: 2,
+            color: Color::from_hex("0080FF").unwrap().into(),
+            visible_faces: vec![0,1,2,3,4,5]
+        });
+    chunk0.add_voxel( Voxel {
+            x: 2,
+            y: 0,
+            z: 0,
+            color: Color::from_hex("FF8000").unwrap().into(),
+            visible_faces: vec![0,1,2,3,4,5]
+        });
+    println!("{:?}", chunk0.voxels);
     // mainloop
     while !rl.window_should_close() {
         let delta = rl.get_frame_time();
@@ -214,21 +278,8 @@ fn main() {
 
         // use d3d for 3d drawing here
         d3d.draw_grid(32, 1.0);
-        d3d.draw_voxel(Voxel {
-            x: 0,
-            y: 0,
-            z: 0,
-            color: Color::from_hex("0080FF").unwrap().into(),
-            visible_faces: vec![0,1,2,3,4,5]
-        });
-        d3d.draw_voxel(Voxel {
-            x: 2,
-            y: 0,
-            z: 0,
-            color: Color::from_hex("FF8000").unwrap().into(),
-            visible_faces: vec![0,1,2,3,4,5]
-        });
-
+        d3d.draw_voxel(&chunk0.voxels[128][2][0]);
+        d3d.draw_voxel(&chunk0.voxels[128][2][1]);
         d3d.draw_bounding_box(BoundingBox {min: player.position, max: player.position + player.size}, Color::WHITE);
         drop(d3d);
         // use d for 2d drawing here (overlay)
