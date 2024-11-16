@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+cty = "0.2.2"
 raylib = "5.0.2"
 safer-ffi = "0.1.13"
 worldgen = "0.5.3"

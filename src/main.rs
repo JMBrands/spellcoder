@@ -104,7 +104,7 @@ struct Voxel {
     z: i64,
     color: ffi::Color,
     visible_faces: Vec<i8>, // Vector with face indices for every face that's visible, the other faces will not be drawn.
-                            // 0 = down 1 = up 2 = north 3 = south 5 = east 6 = west
+                            // 0 = down 1 = up 2 = north 3 = south 4 = east 5 = west
 }
 impl Debug for Voxel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -273,14 +273,15 @@ impl Chunk {
         chunk
     }
 
-    // fn gen_mesh(
-    //     &mut self,
-    //     thread: &RaylibThread,
-    //     noise: &PerlinNoise,
-    //     chunk_x: i64,
-    //     chunk_z: i64,
-    //     seed: u64,
-    // ) {
+
+    fn gen_mesh(
+        &mut self,
+        thread: &RaylibThread,
+        noise: &PerlinNoise,
+        chunk_x: i64,
+        chunk_z: i64,
+        seed: u64,
+    ) {}
     //     // let mut meshes = Vec<Mesh>::new();
     //     // println!("{:#?}", Mesh::gen_mesh_cube(thread, 1.0, 1.0, 1.0));
     //     // let mut y = 0;
@@ -350,8 +351,28 @@ impl Chunk {
     }
 }
 
+#[repr(C)]
+pub struct CVoxel {
+    pub x: cty::c_long,
+    pub y: cty::c_ushort,
+    pub z: cty::c_long,
+    pub color: Color,
+    pub visible_faces: [cty::c_char; 6]
+}
+impl From<Voxel> for CVoxel {
+    fn from(value: Voxel) -> Self {
+        let mut arr: [cty::c_char; 6] = [6,6,6,6,6,6];
+        let mut i = 0;
+        for val in value.visible_faces {
+            arr[i] = val;
+            i += 1;
+        }
+        CVoxel { x: value.x, y: value.y, z: value.z, color: value.color.into(), visible_faces: arr }
+    }
+}
+
 extern "C" {
-    pub fn gen_chunk_mesh(voxels: Vec<Vec<Vec<Voxel>>>, thread: &RaylibThread) -> Mesh;
+    pub fn gen_chunk_mesh(voxels: &[[[CVoxel; 16]; 16]; u16::MAX as usize], thread: &RaylibThread) -> Mesh;
 }
 
 struct World {
