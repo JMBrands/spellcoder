@@ -1,6 +1,6 @@
 #include "mesh.h"
 
-Mesh gen_chunk_mesh(Voxel*** voxels) {
+Mesh gen_chunk_mesh(Voxel voxels[65535][16][16]) {
     Mesh mesh = { 0 };
 // https://github.com/raysan5/raylib/blob/master/examples/models/models_mesh_generation.c
 

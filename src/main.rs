@@ -1,3 +1,5 @@
+mod bindings;
+
 use std::{
     cmp::Ordering,
     f32::consts::PI,
@@ -9,7 +11,7 @@ use std::{
 use raylib::prelude::*;
 use worldgen::noise::{perlin::PerlinNoise, NoiseProvider};
 use ::safer_ffi::prelude::*;
-
+use bindings::*;
 
 const SPEED: f32 = 32.0;
 
@@ -98,12 +100,13 @@ impl Player {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Voxel {
     x: i64,
     y: u16,
     z: i64,
     color: ffi::Color,
-    visible_faces: Vec<i8>, // Vector with face indices for every face that's visible, the other faces will not be drawn.
+    visible_faces: [bool; 6], // Vector with face indices for every face that's visible, the other faces will not be drawn.
                             // 0 = down 1 = up 2 = north 3 = south 4 = east 5 = west
 }
 impl Debug for Voxel {
@@ -131,64 +134,68 @@ trait VoxelDraw {
 impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
     fn draw_voxel(&mut self, voxel: &Voxel) {
         let position = Vector3::new(voxel.x as f32, voxel.y as f32, voxel.z as f32);
+        let mut i = 0;
         for face in &voxel.visible_faces {
-            match face {
-                0 => self.draw_triangle_strip3D(
-                    &[
-                        position + Vector3::forward() + Vector3::right(),
-                        position + Vector3::forward(),
-                        position + Vector3::right(),
-                        position,
-                    ],
-                    voxel.color,
-                ),
-                1 => self.draw_triangle_strip3D(
-                    &[
-                        position + Vector3::up(),
-                        position + Vector3::forward() + Vector3::up(),
-                        position + Vector3::right() + Vector3::up(),
-                        position + Vector3::forward() + Vector3::right() + Vector3::up(),
-                    ],
-                    voxel.color,
-                ),
-                2 => self.draw_triangle_strip3D(
-                    &[
-                        position + Vector3::forward() + Vector3::up(),
-                        position + Vector3::up(),
-                        position + Vector3::forward(),
-                        position,
-                    ],
-                    voxel.color,
-                ),
-                3 => self.draw_triangle_strip3D(
-                    &[
-                        position + Vector3::right(),
-                        position + Vector3::up() + Vector3::right(),
-                        position + Vector3::forward() + Vector3::right(),
-                        position + Vector3::forward() + Vector3::up() + Vector3::right(),
-                    ],
-                    voxel.color,
-                ),
-                4 => self.draw_triangle_strip3D(
-                    &[
-                        position + Vector3::up() + Vector3::right(),
-                        position + Vector3::right(),
-                        position + Vector3::up(),
-                        position,
-                    ],
-                    voxel.color,
-                ),
-                5 => self.draw_triangle_strip3D(
-                    &[
-                        position + Vector3::forward(),
-                        position + Vector3::right() + Vector3::forward(),
-                        position + Vector3::up() + Vector3::forward(),
-                        position + Vector3::up() + Vector3::right() + Vector3::forward(),
-                    ],
-                    voxel.color,
-                ),
-                i8::MIN..=-1_i8 | 6_i8..=i8::MAX => (),
+            if *face {
+                match i {
+                    0 => self.draw_triangle_strip3D(
+                        &[
+                            position + Vector3::forward() + Vector3::right(),
+                            position + Vector3::forward(),
+                            position + Vector3::right(),
+                            position,
+                        ],
+                        voxel.color,
+                    ),
+                    1 => self.draw_triangle_strip3D(
+                        &[
+                            position + Vector3::up(),
+                            position + Vector3::forward() + Vector3::up(),
+                            position + Vector3::right() + Vector3::up(),
+                            position + Vector3::forward() + Vector3::right() + Vector3::up(),
+                        ],
+                        voxel.color,
+                    ),
+                    2 => self.draw_triangle_strip3D(
+                        &[
+                            position + Vector3::forward() + Vector3::up(),
+                            position + Vector3::up(),
+                            position + Vector3::forward(),
+                            position,
+                        ],
+                        voxel.color,
+                    ),
+                    3 => self.draw_triangle_strip3D(
+                        &[
+                            position + Vector3::right(),
+                            position + Vector3::up() + Vector3::right(),
+                            position + Vector3::forward() + Vector3::right(),
+                            position + Vector3::forward() + Vector3::up() + Vector3::right(),
+                        ],
+                        voxel.color,
+                    ),
+                    4 => self.draw_triangle_strip3D(
+                        &[
+                            position + Vector3::up() + Vector3::right(),
+                            position + Vector3::right(),
+                            position + Vector3::up(),
+                            position,
+                        ],
+                        voxel.color,
+                    ),
+                    5 => self.draw_triangle_strip3D(
+                        &[
+                            position + Vector3::forward(),
+                            position + Vector3::right() + Vector3::forward(),
+                            position + Vector3::up() + Vector3::forward(),
+                            position + Vector3::up() + Vector3::right() + Vector3::forward(),
+                        ],
+                        voxel.color,
+                    ),
+                    i8::MIN..=-1_i8 | 6_i8..=i8::MAX => (),
+                }
             }
+            i += 1;
         }
     }
 
@@ -264,7 +271,7 @@ impl Chunk {
                         a: 255,
                     }
                     .into(),
-                    visible_faces: vec![1, 2, 3, 4, 5],
+                    visible_faces: [false,true,true,true,true,true]
                 });
                 // println!("{}", noise.generate((chunk_x * 16 + x) as f64 / 32.0, (chunk_z * 16 + z) as f64 / 32.0, seed));
             }
@@ -351,29 +358,19 @@ impl Chunk {
     }
 }
 
-#[repr(C)]
-pub struct CVoxel {
-    pub x: cty::c_long,
-    pub y: cty::c_ushort,
-    pub z: cty::c_long,
-    pub color: Color,
-    pub visible_faces: [cty::c_char; 6]
-}
 impl From<Voxel> for CVoxel {
     fn from(value: Voxel) -> Self {
-        let mut arr: [cty::c_char; 6] = [6,6,6,6,6,6];
-        let mut i = 0;
-        for val in value.visible_faces {
-            arr[i] = val;
-            i += 1;
+        let mut arr: [cty::c_char; 6] = [0; 6];
+        for i in 0..6 {
+            arr[i] = match value.visible_faces[i] {
+                true => 1,
+                false => 0
+            }
         }
-        CVoxel { x: value.x, y: value.y, z: value.z, color: value.color.into(), visible_faces: arr }
+        CVoxel { x: value.x as i32, y: value.y as i32, z: value.z as i32, color: value.color.into(), visible_faces: arr }
     }
 }
 
-extern "C" {
-    pub fn gen_chunk_mesh(voxels: &[[[CVoxel; 16]; 16]; u16::MAX as usize], thread: &RaylibThread) -> Mesh;
-}
 
 struct World {
     chunks: Vec<Chunk>,
@@ -487,7 +484,18 @@ fn main() {
 
         // use d3d for 3d drawing here
         d3d.draw_grid(32, 1.0);
-        d3d.draw_world(&world);
+        unsafe {
+            let mut voxels: [[[CVoxel; 16]; 16]; 65535] = [[[CVoxel {x: 0, y: 0, z: 0, color: Color::BLACK, visible_faces: [6; 6]} ; 16]; 16]; u16::MAX as usize];
+            for x in 0..16 {
+                for y in 0..16 {
+                    for z in 0..u16::MAX as usize {
+                        voxels[x][y][z] = world.chunks[0].voxels[x][y][z].into();
+                    }
+                }
+            }
+            gen_chunk_mesh(voxels);
+        }
+        // d3d.draw_world(&world);
         d3d.draw_bounding_box(
             BoundingBox {
                 min: player.position,

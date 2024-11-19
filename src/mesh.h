@@ -1,4 +1,4 @@
-#include <raylib.h>
+#include "raylib.h"
 
 typedef struct {
     int x;
@@ -9,4 +9,4 @@ typedef struct {
                             // 0 = down 1 = up 2 = north 3 = south 5 = east 6 = west
 } Voxel;
 
-Mesh gen_chunk_mesh(Voxel*** voxels);
+Mesh gen_chunk_mesh(Voxel voxels[65535][16][16]);
