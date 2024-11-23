@@ -1,17 +1,9 @@
-mod bindings;
-
 use std::{
-    cmp::Ordering,
-    f32::consts::PI,
-    fmt::{self, Debug},
-    i8,
-    thread::panicking,
+    cmp::Ordering, f32::consts::PI, fmt::{self, Debug}, i8
 };
 
 use raylib::prelude::*;
 use worldgen::noise::{perlin::PerlinNoise, NoiseProvider};
-use ::safer_ffi::prelude::*;
-use bindings::*;
 
 const SPEED: f32 = 32.0;
 
@@ -26,8 +18,8 @@ impl Player {
             position,
             camera: Camera3D::perspective(
                 Vector3 {
-                    x: position.x - 80.0,
-                    y: position.y + 240.0,
+                    x: position.x + 8.0,
+                    y: position.y + 24.0,
                     z: position.z + 8.0,
                 },
                 Vector3 {
@@ -200,13 +192,7 @@ impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
     }
 
     fn draw_chunk(&mut self, chunk: &Chunk) {
-        for layer in &chunk.voxels {
-            for row in layer {
-                for voxel in row {
-                    self.draw_voxel(voxel);
-                }
-            }
-        }
+        self.draw_model(&chunk.model, Vector3{x: chunk.x as f32, y: 0.0, z: chunk.z as f32}, 1.0, Color::WHITE);
     }
     fn draw_world(&mut self, world: &World) {
         for chunk in &world.chunks {
@@ -219,10 +205,11 @@ struct Chunk {
     voxels: Vec<Vec<Vec<Voxel>>>,
     x: i64,
     z: i64,
-    mesh: Mesh,
+    mesh: ffi::Mesh,
+    model: Model
 }
 impl Chunk {
-    fn new(x: i64, z: i64, thread: &RaylibThread) -> Chunk {
+    fn new(rl: &mut RaylibHandle, x: i64, z: i64, thread: &RaylibThread) -> Chunk {
         let mut voxels: Vec<Vec<Vec<Voxel>>> = Vec::new();
         for _y in u16::MIN..u16::MAX {
             let mut layer: Vec<Vec<Voxel>> = Vec::new();
@@ -235,18 +222,20 @@ impl Chunk {
             voxels,
             x,
             z,
-            mesh: Mesh::gen_mesh_poly(thread, 1, 1.0),
+            mesh: unsafe { ffi::GenMeshCube(1.0, 1.0, 1.0) },
+            model: rl.load_model_from_mesh(thread, unsafe { Mesh::gen_mesh_poly(thread, 1, 1.0).make_weak() }).expect("Error loading mesh")
         }
     }
 
     fn generate(
+        rl: &mut RaylibHandle,
         chunk_x: i64,
         chunk_z: i64,
         noise: &PerlinNoise,
         seed: u64,
         thread: &RaylibThread,
     ) -> Self {
-        let mut chunk = Chunk::new(chunk_x * 16, chunk_z * 16, thread);
+        let mut chunk = Chunk::new(rl, chunk_x * 16, chunk_z * 16, thread);
         for x in 0..16 {
             for z in 0..16 {
                 chunk.add_voxel(Voxel {
@@ -276,78 +265,28 @@ impl Chunk {
                 // println!("{}", noise.generate((chunk_x * 16 + x) as f64 / 32.0, (chunk_z * 16 + z) as f64 / 32.0, seed));
             }
         }
-        chunk.gen_mesh(thread, noise, chunk_x, chunk_z, seed);
+        chunk.gen_mesh(rl, thread, noise, chunk_x, chunk_z, seed);
         chunk
     }
 
 
     fn gen_mesh(
         &mut self,
+        rl: &mut RaylibHandle,
         thread: &RaylibThread,
         noise: &PerlinNoise,
         chunk_x: i64,
         chunk_z: i64,
         seed: u64,
-    ) {}
-    //     // let mut meshes = Vec<Mesh>::new();
-    //     // println!("{:#?}", Mesh::gen_mesh_cube(thread, 1.0, 1.0, 1.0));
-    //     // let mut y = 0;
-    //     // for layer in &self.voxels {
-    //     //     let mut x = 0;
-    //     //     for row in layer {
-    //     //         let mut z = 0;
-    //     //         for voxel in row {
-    //     //             z += 1;
-    //     //         x += 1;
-    //     //     }
-    //     //     y += 1;
-    //     // }
-    //     let mut vertices: Vec<Vector3> = Vec::with_capacity(17 * 17 * 2);
-    //     for x in 0..17 {
-    //         for y in 0..2 {
-    //             for z in 0..17 {
-    //                 vertices.push(Vector3 {
-    //                     x: x as f32,
-    //                     y: y as f32
-    //                         + ((noise.generate(
-    //                             (chunk_x * 16 + x) as f64 / 48.0,
-    //                             (chunk_z * 16 + z) as f64 / 48.0,
-    //                             seed,
-    //                         ) + 1.0)
-    //                             * 8.0) as f32
-    //                         + ((noise.generate(
-    //                             (chunk_x * 16 + x) as f64 / 128.0,
-    //                             (chunk_z * 16 + z) as f64 / 128.0,
-    //                             seed / 2,
-    //                         ) + 1.0)
-    //                             * 128.0) as f32,
-    //                     z: z as f32,
-    //                 });
-    //             }
-    //         }
-    //     }
-    //     let mut normals: Vec<Vector3> = Vec::with_capacity(17 * 17 * 2);
-    //     for i in 0..normals.len() {
-    //         normals[i] = Vector3::up();
-    //     }
-    //     let mut mesh = ffi::Mesh {
-    //         vertexCount: 17 * 17 * 2,
-    //         triangleCount: (17 * 17 * 2) / 3,
-    //         vertices: std::ptr::null_mut(),
-    //         texcoords: std::ptr::null_mut(),
-    //         texcoords2: std::ptr::null_mut(),
-    //         normals: std::ptr::null_mut(),
-    //         tangents: std::ptr::null_mut(),
-    //         colors: std::ptr::null_mut(),
-    //         indices: std::ptr::null_mut(),
-    //         animVertices: std::ptr::null_mut(),
-    //         animNormals: std::ptr::null_mut(),
-    //         boneIds: std::ptr::null_mut(),
-    //         boneWeights: std::ptr::null_mut(),
-    //         vaoId: 0,
-    //         vboId: std::ptr::null_mut(),
-    //     };
-    // }
+    )  {
+        unsafe {
+            let mesh = ffi::GenMeshCube(1.0, 1.0, 1.0);
+            *mesh.vertices = 1.0;
+            self.mesh = mesh;
+            self.model = rl.load_model_from_mesh(thread, WeakMesh::from_raw(mesh)).expect("Error loading mesh");
+        }
+
+    }
     
     
     fn add_voxel(&mut self, voxel: Voxel) {
@@ -357,20 +296,6 @@ impl Chunk {
         self.voxels[y][x].sort_by(|a, b| a.compare_by_z(b));
     }
 }
-
-impl From<Voxel> for CVoxel {
-    fn from(value: Voxel) -> Self {
-        let mut arr: [cty::c_char; 6] = [0; 6];
-        for i in 0..6 {
-            arr[i] = match value.visible_faces[i] {
-                true => 1,
-                false => 0
-            }
-        }
-        CVoxel { x: value.x as i32, y: value.y as i32, z: value.z as i32, color: value.color.into(), visible_faces: arr }
-    }
-}
-
 
 struct World {
     chunks: Vec<Chunk>,
@@ -387,8 +312,8 @@ impl World {
         }
     }
 
-    fn generate_chunk(&mut self, chunk_x: i64, chunk_z: i64, thread: &RaylibThread) {
-        let chunk = Chunk::generate(chunk_x, chunk_z, &self.noise, self.seed, thread);
+    fn generate_chunk(&mut self, rl: &mut RaylibHandle, chunk_x: i64, chunk_z: i64, thread: &RaylibThread) {
+        let chunk = Chunk::generate(rl, chunk_x, chunk_z, &self.noise, self.seed, thread);
         self.chunks.push(chunk);
     }
 }
@@ -409,7 +334,7 @@ fn main() {
     let mut world = World::new();
     for x in -4..4 {
         for z in -4..4 {
-            world.generate_chunk(x, z, &thread);
+            world.generate_chunk(&mut rl, x, z, &thread);
         }
     }
     // println!("{:?}", world.chunks[0].voxels);
@@ -475,6 +400,9 @@ fn main() {
                 z: 0.0,
             });
         }
+        let mesh = unsafe { WeakMesh::from_raw(ffi::GenMeshCube(1.0, 1.0, 1.0))};
+        let model = rl.load_model_from_mesh(&thread, mesh).expect("error");
+        world.chunks[0].gen_mesh(&mut rl, &thread, &world.noise, 0, 0, 0);
         // set up drawing
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(Color::BLACK);
@@ -484,7 +412,7 @@ fn main() {
 
         // use d3d for 3d drawing here
         d3d.draw_grid(32, 1.0);
-        unsafe {
+        /*unsafe {
             let mut voxels: [[[CVoxel; 16]; 16]; 65535] = [[[CVoxel {x: 0, y: 0, z: 0, color: Color::BLACK, visible_faces: [6; 6]} ; 16]; 16]; u16::MAX as usize];
             for x in 0..16 {
                 for y in 0..16 {
@@ -494,8 +422,9 @@ fn main() {
                 }
             }
             gen_chunk_mesh(voxels);
-        }
-        // d3d.draw_world(&world);
+        }*/
+        d3d.draw_world(&world);
+        // d3d.draw_model(model, Vector3{x: 0.0, y: 0.0, z: 0.0}, 1.0, Color::WHITE);
         d3d.draw_bounding_box(
             BoundingBox {
                 min: player.position,
