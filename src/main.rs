@@ -1,5 +1,6 @@
+use ::core::time;
 use std::{
-    cmp::Ordering, f32::consts::PI, fmt::{self, Debug}, i8
+    cmp::Ordering, f32::consts::PI, fmt::{self, Debug}, mem, os::raw::c_int, ptr::null, thread
 };
 
 use raylib::prelude::*;
@@ -14,12 +15,12 @@ struct Player {
 }
 impl Player {
     fn new(position: Vector3) -> Self {
-        let mut player = Player {
+        let player = Player {
             position,
             camera: Camera3D::perspective(
                 Vector3 {
                     x: position.x + 8.0,
-                    y: position.y + 24.0,
+                    y: position.y + 2.40,
                     z: position.z + 8.0,
                 },
                 Vector3 {
@@ -119,78 +120,10 @@ impl Voxel {
 }
 
 trait VoxelDraw {
-    fn draw_voxel(&mut self, voxel: &Voxel);
     fn draw_chunk(&mut self, chunk: &Chunk);
     fn draw_world(&mut self, world: &World);
 }
 impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
-    fn draw_voxel(&mut self, voxel: &Voxel) {
-        let position = Vector3::new(voxel.x as f32, voxel.y as f32, voxel.z as f32);
-        let mut i = 0;
-        for face in &voxel.visible_faces {
-            if *face {
-                match i {
-                    0 => self.draw_triangle_strip3D(
-                        &[
-                            position + Vector3::forward() + Vector3::right(),
-                            position + Vector3::forward(),
-                            position + Vector3::right(),
-                            position,
-                        ],
-                        voxel.color,
-                    ),
-                    1 => self.draw_triangle_strip3D(
-                        &[
-                            position + Vector3::up(),
-                            position + Vector3::forward() + Vector3::up(),
-                            position + Vector3::right() + Vector3::up(),
-                            position + Vector3::forward() + Vector3::right() + Vector3::up(),
-                        ],
-                        voxel.color,
-                    ),
-                    2 => self.draw_triangle_strip3D(
-                        &[
-                            position + Vector3::forward() + Vector3::up(),
-                            position + Vector3::up(),
-                            position + Vector3::forward(),
-                            position,
-                        ],
-                        voxel.color,
-                    ),
-                    3 => self.draw_triangle_strip3D(
-                        &[
-                            position + Vector3::right(),
-                            position + Vector3::up() + Vector3::right(),
-                            position + Vector3::forward() + Vector3::right(),
-                            position + Vector3::forward() + Vector3::up() + Vector3::right(),
-                        ],
-                        voxel.color,
-                    ),
-                    4 => self.draw_triangle_strip3D(
-                        &[
-                            position + Vector3::up() + Vector3::right(),
-                            position + Vector3::right(),
-                            position + Vector3::up(),
-                            position,
-                        ],
-                        voxel.color,
-                    ),
-                    5 => self.draw_triangle_strip3D(
-                        &[
-                            position + Vector3::forward(),
-                            position + Vector3::right() + Vector3::forward(),
-                            position + Vector3::up() + Vector3::forward(),
-                            position + Vector3::up() + Vector3::right() + Vector3::forward(),
-                        ],
-                        voxel.color,
-                    ),
-                    i8::MIN..=-1_i8 | 6_i8..=i8::MAX => (),
-                }
-            }
-            i += 1;
-        }
-    }
-
     fn draw_chunk(&mut self, chunk: &Chunk) {
         self.draw_model(&chunk.model, Vector3{x: chunk.x as f32, y: 0.0, z: chunk.z as f32}, 1.0, Color::WHITE);
     }
@@ -265,7 +198,7 @@ impl Chunk {
                 // println!("{}", noise.generate((chunk_x * 16 + x) as f64 / 32.0, (chunk_z * 16 + z) as f64 / 32.0, seed));
             }
         }
-        chunk.gen_mesh(rl, thread, noise, chunk_x, chunk_z, seed);
+        chunk.gen_mesh(rl, thread, noise, seed);
         chunk
     }
 
@@ -275,15 +208,97 @@ impl Chunk {
         rl: &mut RaylibHandle,
         thread: &RaylibThread,
         noise: &PerlinNoise,
-        chunk_x: i64,
-        chunk_z: i64,
         seed: u64,
     )  {
         unsafe {
+            /*
+            pub struct Mesh {
+                pub vertexCount: ::std::os::raw::c_int,
+                pub triangleCount: ::std::os::raw::c_int,
+                pub vertices: *mut f32,
+                pub texcoords: *mut f32,
+                pub texcoords2: *mut f32,
+                pub normals: *mut f32,
+                pub tangents: *mut f32,
+                pub colors: *mut ::std::os::raw::c_uchar,
+                pub indices: *mut ::std::os::raw::c_ushort,
+                pub animVertices: *mut f32,
+                pub animNormals: *mut f32,
+                pub boneIds: *mut ::std::os::raw::c_uchar,
+                pub boneWeights: *mut f32,
+                pub vaoId: ::std::os::raw::c_uint,
+                pub vboId: *mut ::std::os::raw::c_uint,
+            }
+            */
+            let mut triangle_count: c_int = 1;
+            let mut vertex_count: c_int = triangle_count * 3;
+            let vertices: *mut f32 = libc::malloc(mem::size_of::<f32>() * 3 * vertex_count as usize) as *mut f32;
+            let texcoords: *mut f32 = libc::malloc(mem::size_of::<f32>() * 2 * vertex_count as usize) as *mut f32;
+            let normals: *mut f32 = libc::malloc(mem::size_of::<f32>() * 3 * vertex_count as usize) as *mut f32;
+
+            *vertices.wrapping_add(0) = 0.0;
+            *vertices.wrapping_add(1) = 0.0;
+            *vertices.wrapping_add(2) = 0.0;
+            *normals.wrapping_add(0) = 0.0;
+            *normals.wrapping_add(1) = 1.0;
+            *normals.wrapping_add(2) = 0.0;
+            *texcoords.wrapping_add(0) = 0.0;
+            *texcoords.wrapping_add(1) = 0.0;
+
+            *vertices.wrapping_add(3) = 1.0;
+            *vertices.wrapping_add(4) = 0.0;
+            *vertices.wrapping_add(5) = 2.0;
+            *normals.wrapping_add(3) = 0.0;
+            *normals.wrapping_add(4) = 1.0;
+            *normals.wrapping_add(6) = 0.0;
+            *texcoords.wrapping_add(2) = 0.5;
+            *texcoords.wrapping_add(3) = 1.0;
+
+            *vertices.wrapping_add(6) = 2.0;
+            *vertices.wrapping_add(7) = 0.0;
+            *vertices.wrapping_add(8) = 0.0;
+            *normals.wrapping_add(6) = 0.0;
+            *normals.wrapping_add(7) = 1.0;
+            *normals.wrapping_add(8) = 0.0;
+            *texcoords.wrapping_add(4) = 1.0;
+            *texcoords.wrapping_add(5) = 0.0;
+
+            let indices: *mut u16 = libc::malloc(mem::size_of::<u16>() * 3 as usize) as *mut u16;
+
+            *indices.wrapping_add(0) = 0;
+            *indices.wrapping_add(1) = 0;
+            *indices.wrapping_add(2) = 0;
+
+            let mesh = ffi::Mesh{
+                vertexCount: vertex_count,
+                triangleCount: triangle_count,
+                vertices,
+                texcoords,
+                texcoords2: texcoords,
+                normals,
+                tangents: 0 as *mut f32,
+                colors: 0 as *mut u8,
+                indices: 0 as *mut u16,
+                animVertices: 0 as *mut f32,
+                animNormals: 0 as *mut f32,
+                boneIds: 0 as *mut u8,
+                boneWeights: 0 as *mut f32,
+                vaoId: 17,
+                vboId: libc::malloc(mem::size_of::<u32>() * 4) as *mut u32,
+            };
+
+            self.model = rl.load_model_from_mesh(thread, WeakMesh::from_raw(mesh)).expect("Error")
+
+            /*
             let mesh = ffi::GenMeshCube(1.0, 1.0, 1.0);
-            *mesh.vertices = 1.0;
+            *mesh.vertices = 10.0;
+            *mesh.normals.wrapping_add(0) = 0.07054;
+            *mesh.normals.wrapping_add(1) = 0.70535;
+            *mesh.normals.wrapping_add(2) = 0.70535;
+
             self.mesh = mesh;
             self.model = rl.load_model_from_mesh(thread, WeakMesh::from_raw(mesh)).expect("Error loading mesh");
+            */
         }
 
     }
@@ -332,18 +347,18 @@ fn main() {
     // set up player
     let mut player = Player::new(Vector3::zero());
     let mut world = World::new();
-    for x in -4..4 {
-        for z in -4..4 {
+    for x in 0..4 {
+        for z in 0..4 {
             world.generate_chunk(&mut rl, x, z, &thread);
         }
     }
     // println!("{:?}", world.chunks[0].voxels);
     // mainloop
     let mut vel = Vector3::zero();
+    println!("MAINLOOP STARTING");
     while !rl.window_should_close() {
         let delta = rl.get_frame_time();
         let _time = rl.get_time() as f32;
-
         // process input
         let mdelta = rl.get_mouse_delta(); // get mouse input
         let cam_angle = player.get_look_direction_vec2(); // get current yaw & pitch
@@ -400,9 +415,6 @@ fn main() {
                 z: 0.0,
             });
         }
-        let mesh = unsafe { WeakMesh::from_raw(ffi::GenMeshCube(1.0, 1.0, 1.0))};
-        let model = rl.load_model_from_mesh(&thread, mesh).expect("error");
-        world.chunks[0].gen_mesh(&mut rl, &thread, &world.noise, 0, 0, 0);
         // set up drawing
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(Color::BLACK);
@@ -423,7 +435,9 @@ fn main() {
             }
             gen_chunk_mesh(voxels);
         }*/
+        println!("DRAWING WORLD");
         d3d.draw_world(&world);
+        println!("DONE DRAWING WORLD");
         // d3d.draw_model(model, Vector3{x: 0.0, y: 0.0, z: 0.0}, 1.0, Color::WHITE);
         d3d.draw_bounding_box(
             BoundingBox {
