@@ -8,6 +8,12 @@ use worldgen::noise::{perlin::PerlinNoise, NoiseProvider};
 
 const SPEED: f32 = 32.0;
 
+#[derive(Clone, Copy)]
+#[repr(C)]
+enum VoxelMaterial {
+    AIR
+}
+
 struct Player {
     position: Vector3,
     camera: Camera3D,
@@ -94,10 +100,9 @@ impl Player {
 }
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct Voxel {
-    x: i64,
-    y: u16,
-    z: i64,
+    material: VoxelMaterial,
     color: ffi::Color,
     visible_faces: [bool; 6], // Vector with face indices for every face that's visible, the other faces will not be drawn.
                             // 0 = down 1 = up 2 = north 3 = south 4 = east 5 = west
@@ -105,17 +110,9 @@ struct Voxel {
 impl Debug for Voxel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Voxel")
-            .field("x", &self.x)
-            .field("y", &self.y)
-            .field("z", &self.z)
             .field("color", &self.color)
             .field("visible_faces", &self.visible_faces)
             .finish()
-    }
-}
-impl Voxel {
-    fn compare_by_z(&self, b: &Voxel) -> Ordering {
-        self.z.cmp(&b.z)
     }
 }
 
@@ -125,7 +122,7 @@ trait VoxelDraw {
 }
 impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
     fn draw_chunk(&mut self, chunk: &Chunk) {
-        self.draw_model(&chunk.model, Vector3{x: chunk.x as f32, y: 0.0, z: chunk.z as f32}, 1.0, Color::WHITE);
+        self.draw_model(&chunk.model, Vector3{x: chunk.x as f32, y: 0.0, z: chunk.z as f32}, 2.0, Color::WHITE);
     }
     fn draw_world(&mut self, world: &World) {
         for chunk in &world.chunks {
@@ -134,8 +131,9 @@ impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
     }
 }
 
+#[repr(C)]
 struct Chunk {
-    voxels: Vec<Vec<Vec<Voxel>>>,
+    voxels: [[[Voxel; 16]; 16]; u16::MAX as usize + 1],
     x: i64,
     z: i64,
     mesh: ffi::Mesh,
@@ -143,20 +141,15 @@ struct Chunk {
 }
 impl Chunk {
     fn new(rl: &mut RaylibHandle, x: i64, z: i64, thread: &RaylibThread) -> Chunk {
-        let mut voxels: Vec<Vec<Vec<Voxel>>> = Vec::new();
-        for _y in u16::MIN..u16::MAX {
-            let mut layer: Vec<Vec<Voxel>> = Vec::new();
-            for _x in 0..16 {
-                layer.push(Vec::new() as Vec<Voxel>);
-            }
-            voxels.push(layer);
-        }
+            let mut voxels: [[[Voxel; 16]; 16]; u16::MAX as usize + 1] = [[[Voxel {material: VoxelMaterial::AIR, color: Color::WHITE.into(), visible_faces: [true; 6]}; 16]; 16]; 65536];
+
+        let mesh = unsafe {ffi::GenMeshCube(1.0, 1.0, 1.0)};
         Chunk {
             voxels,
             x,
             z,
-            mesh: unsafe { ffi::GenMeshCube(1.0, 1.0, 1.0) },
-            model: rl.load_model_from_mesh(thread, unsafe { Mesh::gen_mesh_poly(thread, 1, 1.0).make_weak() }).expect("Error loading mesh")
+            mesh,
+            model: rl.load_model_from_mesh(thread, unsafe { WeakMesh::from_raw(mesh) }).expect("Error loading mesh")
         }
     }
 
@@ -230,13 +223,13 @@ impl Chunk {
                 pub vboId: *mut ::std::os::raw::c_uint,
             }
             */
-            let mut triangle_count: c_int = 1;
-            let mut vertex_count: c_int = triangle_count * 3;
+            let triangle_count: c_int = 1;
+            let vertex_count: c_int = triangle_count * 3;
             let vertices: *mut f32 = libc::malloc(mem::size_of::<f32>() * 3 * vertex_count as usize) as *mut f32;
             let texcoords: *mut f32 = libc::malloc(mem::size_of::<f32>() * 2 * vertex_count as usize) as *mut f32;
             let normals: *mut f32 = libc::malloc(mem::size_of::<f32>() * 3 * vertex_count as usize) as *mut f32;
 
-            *vertices.wrapping_add(0) = 0.0;
+            *vertices.wrapping_add(0) = 2.0;
             *vertices.wrapping_add(1) = 0.0;
             *vertices.wrapping_add(2) = 0.0;
             *normals.wrapping_add(0) = 0.0;
@@ -254,8 +247,8 @@ impl Chunk {
             *texcoords.wrapping_add(2) = 0.5;
             *texcoords.wrapping_add(3) = 1.0;
 
-            *vertices.wrapping_add(6) = 2.0;
-            *vertices.wrapping_add(7) = 0.0;
+            *vertices.wrapping_add(6) = 0.0;
+            *vertices.wrapping_add(7) = 1.0;
             *vertices.wrapping_add(8) = 0.0;
             *normals.wrapping_add(6) = 0.0;
             *normals.wrapping_add(7) = 1.0;
@@ -263,12 +256,23 @@ impl Chunk {
             *texcoords.wrapping_add(4) = 1.0;
             *texcoords.wrapping_add(5) = 0.0;
 
-            let indices: *mut u16 = libc::malloc(mem::size_of::<u16>() * 3 as usize) as *mut u16;
+            let colors: *mut u8 = libc::malloc(mem::size_of::<u8>() * 4 * vertex_count as usize) as *mut u8;
+            for i in 0..3 as usize {
+                *colors.wrapping_add(i * 4 + 0) = 0;
+                *colors.wrapping_add(i * 4 + 1) = 128;
+                *colors.wrapping_add(i * 4 + 2) = 255;
+                *colors.wrapping_add(i * 4 + 3) = 255;
+            }
 
-            *indices.wrapping_add(0) = 0;
-            *indices.wrapping_add(1) = 0;
-            *indices.wrapping_add(2) = 0;
+            let indices: *mut u16 = libc::malloc(mem::size_of::<u16>() * 3) as *mut u16;
 
+            *indices.add(0) = 0;
+            *indices.add(1) = 1;
+            *indices.add(2) = 2;
+            let vbo: *mut u32 = libc::malloc(mem::size_of::<u32>() * 7) as *mut u32;
+            for i in 0..7 {
+                *vbo.wrapping_add(i) = 0;
+            }
             let mesh = ffi::Mesh{
                 vertexCount: vertex_count,
                 triangleCount: triangle_count,
@@ -278,13 +282,13 @@ impl Chunk {
                 normals,
                 tangents: 0 as *mut f32,
                 colors: 0 as *mut u8,
-                indices: 0 as *mut u16,
+                indices,
                 animVertices: 0 as *mut f32,
                 animNormals: 0 as *mut f32,
                 boneIds: 0 as *mut u8,
                 boneWeights: 0 as *mut f32,
-                vaoId: 17,
-                vboId: libc::malloc(mem::size_of::<u32>() * 4) as *mut u32,
+                vaoId: 0,
+                vboId: vbo,
             };
 
             self.model = rl.load_model_from_mesh(thread, WeakMesh::from_raw(mesh)).expect("Error")
@@ -435,9 +439,7 @@ fn main() {
             }
             gen_chunk_mesh(voxels);
         }*/
-        println!("DRAWING WORLD");
         d3d.draw_world(&world);
-        println!("DONE DRAWING WORLD");
         // d3d.draw_model(model, Vector3{x: 0.0, y: 0.0, z: 0.0}, 1.0, Color::WHITE);
         d3d.draw_bounding_box(
             BoundingBox {
