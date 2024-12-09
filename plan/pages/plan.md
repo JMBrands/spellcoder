@@ -1,3 +1,13 @@
-- Physics: Noita-inspired
-- Spellbuilding: scripting
+- Physics
+	- Noita-inspired
+	- Voxel-based
+- Spells
+	- Door spelers
+	- Templates
+	- Scripts
+		- misschien ook blocks
+	- Elke functie kost mana oid
 - 3D voxel based, first person
+- Random worldgen
+	- Meerdere perlin noisemaps
+- Gemaakt in rust met raylib

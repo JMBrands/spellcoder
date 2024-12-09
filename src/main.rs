@@ -11,7 +11,8 @@ const SPEED: f32 = 32.0;
 #[derive(Clone, Copy)]
 #[repr(C)]
 enum VoxelMaterial {
-    AIR
+    AIR,
+    BLOCK
 }
 
 struct Player {
@@ -133,7 +134,7 @@ impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
 
 #[repr(C)]
 struct Chunk {
-    voxels: [[[Voxel; 16]; 16]; u16::MAX as usize + 1],
+    voxels: *mut [[[Voxel; 16]; 16]; u16::MAX as usize + 1],
     x: i64,
     z: i64,
     mesh: ffi::Mesh,
@@ -141,7 +142,12 @@ struct Chunk {
 }
 impl Chunk {
     fn new(rl: &mut RaylibHandle, x: i64, z: i64, thread: &RaylibThread) -> Chunk {
-            let mut voxels: [[[Voxel; 16]; 16]; u16::MAX as usize + 1] = [[[Voxel {material: VoxelMaterial::AIR, color: Color::WHITE.into(), visible_faces: [true; 6]}; 16]; 16]; 65536];
+        // let voxels: [[[Voxel; 16]; 16]; u16::MAX as usize + 1] = [[[Voxel {material: VoxelMaterial::AIR, color: Color::WHITE.into(), visible_faces: [true; 6]}; 16]; 16]; 65536];
+        let voxels: *mut [[[Voxel; 16]; 16]; u16::MAX as usize + 1] = [[[Voxel {
+            material: VoxelMaterial::AIR,
+            color: ffi::Color { r: 255, g: 255, b: 255, a: 255 },
+            visible_faces: [true; 6]
+        }; 16]; 16]; u16::MAX as usize + 1];
 
         let mesh = unsafe {ffi::GenMeshCube(1.0, 1.0, 1.0)};
         Chunk {
@@ -164,34 +170,38 @@ impl Chunk {
         let mut chunk = Chunk::new(rl, chunk_x * 16, chunk_z * 16, thread);
         for x in 0..16 {
             for z in 0..16 {
-                chunk.add_voxel(Voxel {
-                    x: chunk_x * 16 + x,
-                    y: ((noise.generate(
+                chunk.add_voxel(
+                    Voxel {
+                        color: Color {
+                            r: (x * 16) as u8,
+                            g: 255,
+                            b: (z * 16) as u8,
+                            a: 255,
+                        }
+                        .into(),
+                        visible_faces: [false,true,true,true,true,true],
+                        material: VoxelMaterial::BLOCK
+                    },
+                    x as u8,
+                    ((noise.generate(
                         (chunk_x * 16 + x) as f64 / 48.0,
                         (chunk_z * 16 + z) as f64 / 48.0,
                         seed,
                     ) + 1.0)
-                        * 8.0) as u16
-                        + ((noise.generate(
-                            (chunk_x * 16 + x) as f64 / 128.0,
-                            (chunk_z * 16 + z) as f64 / 128.0,
-                            seed / 2,
-                        ) + 1.0)
-                            * 128.0) as u16,
-                    z: chunk_z * 16 + z,
-                    color: Color {
-                        r: (x * 16) as u8,
-                        g: 255,
-                        b: (z * 16) as u8,
-                        a: 255,
-                    }
-                    .into(),
-                    visible_faces: [false,true,true,true,true,true]
-                });
+                    * 8.0) as u16
+                    + ((noise.generate(
+                        (chunk_x * 16 + x) as f64 / 128.0,
+                        (chunk_z * 16 + z) as f64 / 128.0,
+                        seed / 2,
+                    ) + 1.0)
+                    * 128.0) as u16,
+                    z as u8,
+                );
                 // println!("{}", noise.generate((chunk_x * 16 + x) as f64 / 32.0, (chunk_z * 16 + z) as f64 / 32.0, seed));
             }
         }
-        chunk.gen_mesh(rl, thread, noise, seed);
+        // chunk.gen_mesh(rl, thread, noise, seed);
+        
         chunk
     }
 
@@ -308,11 +318,8 @@ impl Chunk {
     }
     
     
-    fn add_voxel(&mut self, voxel: Voxel) {
-        let x = (voxel.x - self.x).abs() as usize;
-        let y = voxel.y as usize;
-        self.voxels[y][x].push(voxel);
-        self.voxels[y][x].sort_by(|a, b| a.compare_by_z(b));
+    fn add_voxel(&mut self, voxel: Voxel, x: u8, y: u16, z: u8) {
+        self.voxels[y as usize][x as usize][z as usize] = voxel;
     }
 }
 
@@ -332,8 +339,8 @@ impl World {
     }
 
     fn generate_chunk(&mut self, rl: &mut RaylibHandle, chunk_x: i64, chunk_z: i64, thread: &RaylibThread) {
-        let chunk = Chunk::generate(rl, chunk_x, chunk_z, &self.noise, self.seed, thread);
-        self.chunks.push(chunk);
+        // self.chunks.push(Chunk::generate(rl, chunk_x, chunk_z, &self.noise, self.seed, thread));
+        self.chunks.push(Chunk::new(rl, chunk_x, chunk_z, thread));
     }
 }
 
@@ -347,7 +354,7 @@ fn main() {
         .build();
     
     // rl.set_target_fps(60);
-    rl.disable_cursor();
+    // rl.disable_cursor();
     // set up player
     let mut player = Player::new(Vector3::zero());
     let mut world = World::new();
