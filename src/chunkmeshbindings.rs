@@ -1,5 +1,7 @@
 use raylib::ffi::{Mesh, Color};
 
+use crate::Chunk;
+
 extern "C" {
-    pub fn GenChunkMesh(chunk: Chunk, seed: u64) -> Mesh;
+    pub fn GenChunkMesh(chunk: &mut Chunk, seed: u64) -> Mesh;
 }

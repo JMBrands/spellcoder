@@ -1,6 +1,6 @@
 #include "chunkmesh.h"
 
-Mesh GenChunkMesh(Chunk chunk, unsigned long int seed) {
+Mesh GenChunkMesh(Chunk *chunk, unsigned long int seed) {
     Mesh mesh = {0};
 
     float vertices[] = {
@@ -34,6 +34,7 @@ Mesh GenChunkMesh(Chunk chunk, unsigned long int seed) {
     mesh.triangleCount = 1;
 
     UploadMesh(&mesh, 0);
+    printf("chunkmesh at %ld, %ld\n", chunk->x, chunk->z);
 
     return mesh;
 }

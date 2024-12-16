@@ -1,7 +1,8 @@
-#include "raylib.h"
+#include "../lib/raylib/include/raylib.h"
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 typedef enum {
     AIR
@@ -21,4 +22,4 @@ typedef struct {
     Model *model;
 } Chunk;
 
-Mesh GenChunkMesh(Chunk chunk, unsigned long int seed);
+Mesh GenChunkMesh(Chunk *chunk, unsigned long int seed);

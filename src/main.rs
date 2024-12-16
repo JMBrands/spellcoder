@@ -1,8 +1,12 @@
+mod chunkmeshbindings;
 use ::core::time;
 use std::{
     cmp::Ordering, f32::consts::PI, fmt::{self, Debug}, mem, os::raw::c_int, ptr::null, thread
 };
 
+
+use chunkmeshbindings::GenChunkMesh;
+use ffi::Color;
 use raylib::prelude::*;
 use worldgen::noise::{perlin::PerlinNoise, NoiseProvider};
 
@@ -123,7 +127,7 @@ trait VoxelDraw {
 }
 impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
     fn draw_chunk(&mut self, chunk: &Chunk) {
-        self.draw_model(&chunk.model, Vector3{x: chunk.x as f32, y: 0.0, z: chunk.z as f32}, 2.0, Color::WHITE);
+        self.draw_model(&chunk.model, Vector3{x: chunk.x as f32 * 16.0, y: 0.0, z: chunk.z as f32 * 16.0}, 1.0, prelude::Color::WHITE);
     }
     fn draw_world(&mut self, world: &World) {
         for chunk in &world.chunks {
@@ -134,7 +138,7 @@ impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
 
 #[repr(C)]
 struct Chunk {
-    voxels: *mut [[[Voxel; 16]; 16]; u16::MAX as usize + 1],
+    voxels: *mut *mut *mut Voxel,
     x: i64,
     z: i64,
     mesh: ffi::Mesh,
@@ -143,20 +147,29 @@ struct Chunk {
 impl Chunk {
     fn new(rl: &mut RaylibHandle, x: i64, z: i64, thread: &RaylibThread) -> Chunk {
         // let voxels: [[[Voxel; 16]; 16]; u16::MAX as usize + 1] = [[[Voxel {material: VoxelMaterial::AIR, color: Color::WHITE.into(), visible_faces: [true; 6]}; 16]; 16]; 65536];
-        let voxels: *mut [[[Voxel; 16]; 16]; u16::MAX as usize + 1] = [[[Voxel {
+        let voxels: *mut *mut *mut Voxel = unsafe { libc::malloc(16 * 16 * 65536 * mem::size_of::<Voxel>()) } as *mut *mut *mut Voxel;
+        /*[[[Voxel {
             material: VoxelMaterial::AIR,
             color: ffi::Color { r: 255, g: 255, b: 255, a: 255 },
             visible_faces: [true; 6]
-        }; 16]; 16]; u16::MAX as usize + 1];
-
+        }; 16]; 16]; u16::MAX as usize + 1];*/
+        
         let mesh = unsafe {ffi::GenMeshCube(1.0, 1.0, 1.0)};
-        Chunk {
+        let mut chunk = Chunk {
             voxels,
             x,
             z,
             mesh,
             model: rl.load_model_from_mesh(thread, unsafe { WeakMesh::from_raw(mesh) }).expect("Error loading mesh")
-        }
+        };
+        // for x in 0..16 as u8 {
+        //     for y in 0..=65535 as u16 {
+        //         for z in 0..16 as u8 {
+        //             chunk.add_voxel(Voxel{material: VoxelMaterial::AIR, color: prelude::Color::WHITE.into(), visible_faces: [true; 6]}, x, y, z);
+        //         }
+        //     }
+        // }
+        chunk
     }
 
     fn generate(
@@ -200,7 +213,7 @@ impl Chunk {
                 // println!("{}", noise.generate((chunk_x * 16 + x) as f64 / 32.0, (chunk_z * 16 + z) as f64 / 32.0, seed));
             }
         }
-        // chunk.gen_mesh(rl, thread, noise, seed);
+        chunk.gen_mesh(rl, thread, noise, seed);
         
         chunk
     }
@@ -233,6 +246,7 @@ impl Chunk {
                 pub vboId: *mut ::std::os::raw::c_uint,
             }
             */
+            /*
             let triangle_count: c_int = 1;
             let vertex_count: c_int = triangle_count * 3;
             let vertices: *mut f32 = libc::malloc(mem::size_of::<f32>() * 3 * vertex_count as usize) as *mut f32;
@@ -258,7 +272,7 @@ impl Chunk {
             *texcoords.wrapping_add(3) = 1.0;
 
             *vertices.wrapping_add(6) = 0.0;
-            *vertices.wrapping_add(7) = 1.0;
+            *vertices.wrapping_add(7) = 10.0;
             *vertices.wrapping_add(8) = 0.0;
             *normals.wrapping_add(6) = 0.0;
             *normals.wrapping_add(7) = 1.0;
@@ -302,7 +316,7 @@ impl Chunk {
             };
 
             self.model = rl.load_model_from_mesh(thread, WeakMesh::from_raw(mesh)).expect("Error")
-
+            */
             /*
             let mesh = ffi::GenMeshCube(1.0, 1.0, 1.0);
             *mesh.vertices = 10.0;
@@ -313,13 +327,16 @@ impl Chunk {
             self.mesh = mesh;
             self.model = rl.load_model_from_mesh(thread, WeakMesh::from_raw(mesh)).expect("Error loading mesh");
             */
+            self.mesh = GenChunkMesh(self, seed);
+            self.model = rl.load_model_from_mesh(thread, WeakMesh::from_raw(self.mesh)).expect("Error loading mesh");
+            println!("{:#?}", self.mesh)
         }
 
     }
     
     
-    fn add_voxel(&mut self, voxel: Voxel, x: u8, y: u16, z: u8) {
-        self.voxels[y as usize][x as usize][z as usize] = voxel;
+    fn add_voxel(&mut self, voxel: Voxel, x: u8, y: u16, z: u8) { // TODO: segfaults, but why?
+        unsafe { *(*(*self.voxels.wrapping_add(y as usize)).wrapping_add(x as usize)).wrapping_add(z as usize) = voxel };
     }
 }
 
@@ -339,8 +356,8 @@ impl World {
     }
 
     fn generate_chunk(&mut self, rl: &mut RaylibHandle, chunk_x: i64, chunk_z: i64, thread: &RaylibThread) {
-        // self.chunks.push(Chunk::generate(rl, chunk_x, chunk_z, &self.noise, self.seed, thread));
-        self.chunks.push(Chunk::new(rl, chunk_x, chunk_z, thread));
+        self.chunks.push(Chunk::generate(rl, chunk_x, chunk_z, &self.noise, self.seed, thread));
+        // self.chunks.push(Chunk::new(rl, chunk_x, chunk_z, thread));
     }
 }
 
@@ -428,7 +445,7 @@ fn main() {
         }
         // set up drawing
         let mut d = rl.begin_drawing(&thread);
-        d.clear_background(Color::BLACK);
+        d.clear_background(prelude::Color::BLACK);
         // use d for 2d drawing here (background)
 
         let mut d3d = d.begin_mode3D(player.camera);
@@ -453,7 +470,7 @@ fn main() {
                 min: player.position,
                 max: player.position + player.size,
             },
-            Color::LIME,
+            prelude::Color::LIME,
         );
         drop(d3d);
         // use d for 2d drawing here (overlay)
