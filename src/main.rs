@@ -3,8 +3,6 @@ use ::core::time;
 use std::{
     cmp::Ordering, f32::consts::PI, fmt::{self, Debug}, mem, os::raw::c_int, ptr::null, thread
 };
-
-
 use chunkmeshbindings::GenChunkMesh;
 use ffi::Color;
 use raylib::prelude::*;
@@ -24,6 +22,42 @@ struct Player {
     camera: Camera3D,
     size: Vector3,
 }
+
+#[derive(Clone, Copy)]
+struct Voxel {
+    xz: u8, // first nibble for x, second nibble for z
+    y: u16,
+    material: VoxelMaterial,
+    color: ffi::Color,
+    visible_faces: [bool; 6], // Vector with face indices for every face that's visible, the other faces will not be drawn.
+    // 0 = down 1 = up 2 = north 3 = south 4 = east 5 = west
+}
+
+struct Chunk {
+    voxels: Vec<Vec<Vec<Voxel>>>,
+    x: i64,
+    z: i64,
+    mesh: ffi::Mesh,
+    model: Model
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CChunk {
+    voxels: *mut *mut *mut VoxelMaterial
+}
+
+struct World {
+    chunks: Vec<Chunk>,
+    noise: worldgen::noise::perlin::PerlinNoise,
+    seed: u64,
+}
+
+trait VoxelDraw {
+    fn draw_chunk(&mut self, chunk: &Chunk);
+    fn draw_world(&mut self, world: &World);
+}
+
 impl Player {
     fn new(position: Vector3) -> Self {
         let player = Player {
@@ -104,14 +138,7 @@ impl Player {
     }
 }
 
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct Voxel {
-    material: VoxelMaterial,
-    color: ffi::Color,
-    visible_faces: [bool; 6], // Vector with face indices for every face that's visible, the other faces will not be drawn.
-                            // 0 = down 1 = up 2 = north 3 = south 4 = east 5 = west
-}
+
 impl Debug for Voxel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Voxel")
@@ -121,10 +148,12 @@ impl Debug for Voxel {
     }
 }
 
-trait VoxelDraw {
-    fn draw_chunk(&mut self, chunk: &Chunk);
-    fn draw_world(&mut self, world: &World);
+impl Voxel {
+    fn compare_by_z(&self, other: &Self) -> std::cmp::Ordering {
+        (self.xz >> 4).cmp(&(other.xz >> 4))
+    }
 }
+
 impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
     fn draw_chunk(&mut self, chunk: &Chunk) {
         self.draw_model(&chunk.model, Vector3{x: chunk.x as f32 * 16.0, y: 0.0, z: chunk.z as f32 * 16.0}, 1.0, prelude::Color::WHITE);
@@ -136,26 +165,41 @@ impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
     }
 }
 
-#[repr(C)]
-struct Chunk {
-    voxels: *mut *mut *mut Voxel,
-    x: i64,
-    z: i64,
-    mesh: ffi::Mesh,
-    model: Model
+impl From<Chunk> for CChunk {
+    fn from(value: Chunk) -> Self {
+        let voxels: *mut *mut *mut VoxelMaterial;
+        unsafe {
+            voxels =  libc::malloc(16 * mem::size_of::<*mut *mut VoxelMaterial>()) as *mut *mut *mut VoxelMaterial;
+            for x in 0..16 as usize {
+                *voxels.wrapping_add(x) = libc::malloc(65536 * mem::size_of::<*mut VoxelMaterial>()) as *mut *mut VoxelMaterial;
+                for y in 0..65536 as usize {
+                    *(*voxels.wrapping_add(x)).wrapping_add(y) = libc::malloc(16 * mem:: size_of::<VoxelMaterial>()) as *mut VoxelMaterial;
+                    for z in 0..16 as usize {
+                        *(*(*(voxels.wrapping_add(x)).wrapping_add(y)).wrapping_add(z)) = match value.get_voxel(x, y, z) {
+                            Ok(v) => v.material,
+                            _ => VoxelMaterial::AIR,
+                        };
+                    }
+                }
+            }
+        }
+        CChunk {
+            voxels
+        }
+    }
 }
+
 impl Chunk {
     fn new(rl: &mut RaylibHandle, x: i64, z: i64, thread: &RaylibThread) -> Chunk {
-        // let voxels: [[[Voxel; 16]; 16]; u16::MAX as usize + 1] = [[[Voxel {material: VoxelMaterial::AIR, color: Color::WHITE.into(), visible_faces: [true; 6]}; 16]; 16]; 65536];
-        let voxels: *mut *mut *mut Voxel = unsafe { libc::malloc(16 * 16 * 65536 * mem::size_of::<Voxel>()) } as *mut *mut *mut Voxel;
-        /*[[[Voxel {
-            material: VoxelMaterial::AIR,
-            color: ffi::Color { r: 255, g: 255, b: 255, a: 255 },
-            visible_faces: [true; 6]
-        }; 16]; 16]; u16::MAX as usize + 1];*/
-        
+        let mut voxels = Vec::with_capacity(16) as Vec<Vec<Vec<Voxel>>>;
+        for x in 0..16 as usize {
+            voxels.push(Vec::with_capacity(65536) as Vec<Vec<Voxel>>);
+            for y in 0..65536 as usize {
+                voxels[x].push(Vec::with_capacity(16) as Vec<Voxel>);
+            }
+        }
         let mesh = unsafe {ffi::GenMeshCube(1.0, 1.0, 1.0)};
-        let mut chunk = Chunk {
+        let chunk = Chunk {
             voxels,
             x,
             z,
@@ -193,22 +237,21 @@ impl Chunk {
                         }
                         .into(),
                         visible_faces: [false,true,true,true,true,true],
-                        material: VoxelMaterial::BLOCK
-                    },
-                    x as u8,
-                    ((noise.generate(
-                        (chunk_x * 16 + x) as f64 / 48.0,
-                        (chunk_z * 16 + z) as f64 / 48.0,
-                        seed,
-                    ) + 1.0)
-                    * 8.0) as u16
-                    + ((noise.generate(
-                        (chunk_x * 16 + x) as f64 / 128.0,
-                        (chunk_z * 16 + z) as f64 / 128.0,
-                        seed / 2,
-                    ) + 1.0)
-                    * 128.0) as u16,
-                    z as u8,
+                        material: VoxelMaterial::BLOCK,
+                        xz: ((x & 0xF) + (z << 4)) as u8,
+                        y: ((noise.generate(
+                            (chunk_x * 16 + x) as f64 / 48.0,
+                            (chunk_z * 16 + z) as f64 / 48.0,
+                            seed,
+                        ) + 1.0)
+                        * 8.0) as u16
+                        + ((noise.generate(
+                            (chunk_x * 16 + x) as f64 / 128.0,
+                            (chunk_z * 16 + z) as f64 / 128.0,
+                            seed / 2,
+                        ) + 1.0)
+                        * 128.0) as u16,
+                    }
                 );
                 // println!("{}", noise.generate((chunk_x * 16 + x) as f64 / 32.0, (chunk_z * 16 + z) as f64 / 32.0, seed));
             }
@@ -335,16 +378,21 @@ impl Chunk {
     }
     
     
-    fn add_voxel(&mut self, voxel: Voxel, x: u8, y: u16, z: u8) { // TODO: segfaults, but why?
-        unsafe { *(*(*self.voxels.wrapping_add(y as usize)).wrapping_add(x as usize)).wrapping_add(z as usize) = voxel };
+    fn add_voxel(&mut self, voxel: Voxel) {
+        let x = (voxel.xz & 0xF) as usize;
+        let y = voxel.y as usize;
+        self.voxels[x][y].push(voxel);
+        self.voxels[x][y].sort_by(|a, b| a.compare_by_z(&b));
+    }
+
+    fn get_voxel(&self, x: usize, y: usize, z: usize) -> Result<&Voxel, usize> {
+        match self.voxels[x][y].binary_search_by(|a| (a.xz >> 4).cmp(&(z as u8))) {
+            Ok(i) => Ok(&self.voxels[x][y][i]),
+            Err(i) => Err(i)
+        }
     }
 }
 
-struct World {
-    chunks: Vec<Chunk>,
-    noise: worldgen::noise::perlin::PerlinNoise,
-    seed: u64,
-}
 impl World {
     fn new() -> Self {
         let noise = PerlinNoise::new();
