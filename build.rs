@@ -4,4 +4,5 @@ fn main() {
         .file("src/chunkmesh.c")
         .include("lib/raylib/include/")
         .compile("chunkmesh.a");
+    println!("compiled chunkmesh.c");
 }

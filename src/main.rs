@@ -1,50 +1,37 @@
-mod chunkmeshbindings;
 use ::core::time;
-use std::{
-    cmp::Ordering, f32::consts::PI, fmt::{self, Debug}, mem, os::raw::c_int, ptr::null, thread
-};
-use chunkmeshbindings::GenChunkMesh;
-use ffi::Color;
+use std::fmt::{self, format, Debug};
+use ffi::{Color};
 use raylib::prelude::*;
 use worldgen::noise::{perlin::PerlinNoise, NoiseProvider};
 
 const SPEED: f32 = 32.0;
+const SCALE: i32 = 4;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
-enum VoxelMaterial {
+enum PixelMaterial {
     AIR,
     BLOCK
 }
 
 struct Player {
-    position: Vector3,
-    camera: Camera3D,
-    size: Vector3,
+    position: Vector2,
+    size: Vector2,
+    camera: Camera2D,
 }
 
 #[derive(Clone, Copy)]
-struct Voxel {
-    xz: u8, // first nibble for x, second nibble for z
-    y: u16,
-    material: VoxelMaterial,
+struct Pixel {
+    x: u8, // first nibble for x, second nibble for z
+    y: u8,
+    material: PixelMaterial,
     color: ffi::Color,
-    visible_faces: [bool; 6], // Vector with face indices for every face that's visible, the other faces will not be drawn.
-    // 0 = down 1 = up 2 = north 3 = south 4 = east 5 = west
 }
 
 struct Chunk {
-    voxels: Vec<Vec<Vec<Voxel>>>,
+    pixels: Vec<Vec<Pixel>>,
     x: i64,
-    z: i64,
-    mesh: ffi::Mesh,
-    model: Model
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CChunk {
-    voxels: *mut *mut *mut VoxelMaterial
+    y: i64
 }
 
 struct World {
@@ -53,34 +40,26 @@ struct World {
     seed: u64,
 }
 
-trait VoxelDraw {
+trait WorldDraw {
     fn draw_chunk(&mut self, chunk: &Chunk);
     fn draw_world(&mut self, world: &World);
+    fn draw_player(&mut self, player: &Player);
 }
 
 impl Player {
-    fn new(position: Vector3) -> Self {
+    fn new(position: Vector2) -> Self {
         let player = Player {
             position,
-            camera: Camera3D::perspective(
-                Vector3 {
-                    x: position.x + 8.0,
-                    y: position.y + 2.40,
-                    z: position.z + 8.0,
-                },
-                Vector3 {
-                    x: position.x + 9.0,
-                    y: position.y + 24.0,
-                    z: position.z + 8.0,
-                } * Vector3::zero(),
-                Vector3::up(),
-                70.0,
-            ),
-            size: Vector3 {
-                x: 16.0,
-                y: 32.0,
-                z: 16.0,
-            },
+            size: Vector2 {
+                x: 8.0,
+                y: 16.0
+            }, 
+            camera: Camera2D {
+                offset: position,
+                target: position,
+                rotation: 0.0,
+                zoom: 1.0
+            }
         };
         // player.set_look_direction_vec2(Vector2 {
         //     x: 0.0,
@@ -88,76 +67,43 @@ impl Player {
         // });
         player
     }
-    // get normalized vector of the direction of the camera
-    fn get_look_direction(&self) -> Vector3 {
-        (self.camera.target - self.camera.position).normalized()
-    }
-
-    // set direction of the camera
-    fn set_look_direction(&mut self, dir: Vector3) {
-        self.camera.target = self.camera.position + dir;
-    }
-
-    // get direction of the camera as yaw & pitch
-    fn get_look_direction_vec2(&self) -> Vector2 {
-        let vec3 = self.get_look_direction();
-        let h_vec2 = Vector2 {
-            x: vec3.x,
-            y: vec3.z,
-        }
-        .normalized();
-        Vector2 {
-            x: h_vec2.y.acos() * h_vec2.x.signum(),
-            y: vec3.y.asin(),
-        }
-    }
-
-    // set direction of the camera as yaw & pitch
-    fn set_look_direction_vec2(&mut self, dir: Vector2) {
-        let h_vec2 = Vector2 {
-            x: dir.x.sin(),
-            y: dir.x.cos(),
-        }
-        .normalized()
-            * dir.y.cos().abs();
-        self.set_look_direction(
-            Vector3 {
-                x: h_vec2.x,
-                y: dir.y.sin(),
-                z: h_vec2.y,
-            }
-            .normalized(),
-        );
-    }
-
     // move camera without changing yaw & pitch
-    fn move_camera(&mut self, delta: Vector3) {
+    fn move_self(&mut self, delta: Vector2) {
         self.position += delta;
-        self.camera.position += delta;
+        self.camera.offset += delta;
         self.camera.target += delta;
     }
 }
 
-
-impl Debug for Voxel {
+impl Debug for Pixel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Voxel")
+        f.debug_struct("Pixel")
             .field("color", &self.color)
-            .field("visible_faces", &self.visible_faces)
+            .field("x", &self.x)
+            .field("y", &self.y)
             .finish()
     }
 }
 
-impl Voxel {
-    fn compare_by_z(&self, other: &Self) -> std::cmp::Ordering {
-        (self.xz >> 4).cmp(&(other.xz >> 4))
+impl Pixel {
+    fn compare_by_y(&self, other: &Self) -> std::cmp::Ordering {
+        self.y.cmp(&other.y)
     }
 }
 
-impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
+impl WorldDraw for RaylibMode2D<'_, RaylibDrawHandle<'_>> {
     fn draw_chunk(&mut self, chunk: &Chunk) {
-        self.draw_model(&chunk.model, Vector3{x: chunk.x as f32 * 16.0, y: 0.0, z: chunk.z as f32 * 16.0}, 1.0, prelude::Color::WHITE);
+        for row in &chunk.pixels {
+            for vox in row {
+                self.draw_rectangle((vox.x as i32 + chunk.x as i32) * SCALE, (vox.y as i32 + chunk.y as i32) * SCALE, SCALE, SCALE, vox.color);
+            }
+        }
     }
+
+    fn draw_player(&mut self, player: &Player) {
+        self.draw_rectangle(player.position.x as i32 * SCALE, player.position.y as i32 * SCALE, player.size.x as i32 * SCALE, player.size.y as i32 * SCALE, Color {r: 255, g: 255, b: 255, a: 255});
+    }
+
     fn draw_world(&mut self, world: &World) {
         for chunk in &world.chunks {
             self.draw_chunk(chunk);
@@ -165,46 +111,16 @@ impl VoxelDraw for RaylibMode3D<'_, RaylibDrawHandle<'_>> {
     }
 }
 
-impl From<Chunk> for CChunk {
-    fn from(value: Chunk) -> Self {
-        let voxels: *mut *mut *mut VoxelMaterial;
-        unsafe {
-            voxels =  libc::malloc(16 * mem::size_of::<*mut *mut VoxelMaterial>()) as *mut *mut *mut VoxelMaterial;
-            for x in 0..16 as usize {
-                *voxels.wrapping_add(x) = libc::malloc(65536 * mem::size_of::<*mut VoxelMaterial>()) as *mut *mut VoxelMaterial;
-                for y in 0..65536 as usize {
-                    *(*voxels.wrapping_add(x)).wrapping_add(y) = libc::malloc(16 * mem:: size_of::<VoxelMaterial>()) as *mut VoxelMaterial;
-                    for z in 0..16 as usize {
-                        *(*(*(voxels.wrapping_add(x)).wrapping_add(y)).wrapping_add(z)) = match value.get_voxel(x, y, z) {
-                            Ok(v) => v.material,
-                            _ => VoxelMaterial::AIR,
-                        };
-                    }
-                }
-            }
-        }
-        CChunk {
-            voxels
-        }
-    }
-}
-
 impl Chunk {
-    fn new(rl: &mut RaylibHandle, x: i64, z: i64, thread: &RaylibThread) -> Chunk {
-        let mut voxels = Vec::with_capacity(16) as Vec<Vec<Vec<Voxel>>>;
+    fn new(rl: &mut RaylibHandle, x: i64, y: i64, thread: &RaylibThread) -> Chunk {
+        let mut pixels = Vec::with_capacity(16) as Vec<Vec<Pixel>>;
         for x in 0..16 as usize {
-            voxels.push(Vec::with_capacity(65536) as Vec<Vec<Voxel>>);
-            for y in 0..65536 as usize {
-                voxels[x].push(Vec::with_capacity(16) as Vec<Voxel>);
-            }
+            pixels.push(Vec::with_capacity(16) as Vec<Pixel>);
         }
-        let mesh = unsafe {ffi::GenMeshCube(1.0, 1.0, 1.0)};
         let chunk = Chunk {
-            voxels,
+            pixels,
             x,
-            z,
-            mesh,
-            model: rl.load_model_from_mesh(thread, unsafe { WeakMesh::from_raw(mesh) }).expect("Error loading mesh")
+            y,
         };
         // for x in 0..16 as u8 {
         //     for y in 0..=65535 as u16 {
@@ -219,175 +135,45 @@ impl Chunk {
     fn generate(
         rl: &mut RaylibHandle,
         chunk_x: i64,
-        chunk_z: i64,
+        chunk_y: i64,
         noise: &PerlinNoise,
         seed: u64,
         thread: &RaylibThread,
     ) -> Self {
-        let mut chunk = Chunk::new(rl, chunk_x * 16, chunk_z * 16, thread);
+        let mut chunk = Chunk::new(rl, chunk_x * 16, chunk_y * 16, thread);
         for x in 0..16 {
-            for z in 0..16 {
-                chunk.add_voxel(
-                    Voxel {
+            for y in 0..16 {
+                chunk.add_pixel(
+                    Pixel {
                         color: Color {
                             r: (x * 16) as u8,
                             g: 255,
-                            b: (z * 16) as u8,
+                            b: (y * 16) as u8,
                             a: 255,
                         }
                         .into(),
-                        visible_faces: [false,true,true,true,true,true],
-                        material: VoxelMaterial::BLOCK,
-                        xz: ((x & 0xF) + (z << 4)) as u8,
-                        y: ((noise.generate(
-                            (chunk_x * 16 + x) as f64 / 48.0,
-                            (chunk_z * 16 + z) as f64 / 48.0,
-                            seed,
-                        ) + 1.0)
-                        * 8.0) as u16
-                        + ((noise.generate(
-                            (chunk_x * 16 + x) as f64 / 128.0,
-                            (chunk_z * 16 + z) as f64 / 128.0,
-                            seed / 2,
-                        ) + 1.0)
-                        * 128.0) as u16,
+                        material: PixelMaterial::BLOCK,
+                        x: x as u8,
+                        y: y as u8
                     }
                 );
                 // println!("{}", noise.generate((chunk_x * 16 + x) as f64 / 32.0, (chunk_z * 16 + z) as f64 / 32.0, seed));
             }
         }
-        chunk.gen_mesh(rl, thread, noise, seed);
         
         chunk
     }
-
-
-    fn gen_mesh(
-        &mut self,
-        rl: &mut RaylibHandle,
-        thread: &RaylibThread,
-        noise: &PerlinNoise,
-        seed: u64,
-    )  {
-        unsafe {
-            /*
-            pub struct Mesh {
-                pub vertexCount: ::std::os::raw::c_int,
-                pub triangleCount: ::std::os::raw::c_int,
-                pub vertices: *mut f32,
-                pub texcoords: *mut f32,
-                pub texcoords2: *mut f32,
-                pub normals: *mut f32,
-                pub tangents: *mut f32,
-                pub colors: *mut ::std::os::raw::c_uchar,
-                pub indices: *mut ::std::os::raw::c_ushort,
-                pub animVertices: *mut f32,
-                pub animNormals: *mut f32,
-                pub boneIds: *mut ::std::os::raw::c_uchar,
-                pub boneWeights: *mut f32,
-                pub vaoId: ::std::os::raw::c_uint,
-                pub vboId: *mut ::std::os::raw::c_uint,
-            }
-            */
-            /*
-            let triangle_count: c_int = 1;
-            let vertex_count: c_int = triangle_count * 3;
-            let vertices: *mut f32 = libc::malloc(mem::size_of::<f32>() * 3 * vertex_count as usize) as *mut f32;
-            let texcoords: *mut f32 = libc::malloc(mem::size_of::<f32>() * 2 * vertex_count as usize) as *mut f32;
-            let normals: *mut f32 = libc::malloc(mem::size_of::<f32>() * 3 * vertex_count as usize) as *mut f32;
-
-            *vertices.wrapping_add(0) = 2.0;
-            *vertices.wrapping_add(1) = 0.0;
-            *vertices.wrapping_add(2) = 0.0;
-            *normals.wrapping_add(0) = 0.0;
-            *normals.wrapping_add(1) = 1.0;
-            *normals.wrapping_add(2) = 0.0;
-            *texcoords.wrapping_add(0) = 0.0;
-            *texcoords.wrapping_add(1) = 0.0;
-
-            *vertices.wrapping_add(3) = 1.0;
-            *vertices.wrapping_add(4) = 0.0;
-            *vertices.wrapping_add(5) = 2.0;
-            *normals.wrapping_add(3) = 0.0;
-            *normals.wrapping_add(4) = 1.0;
-            *normals.wrapping_add(6) = 0.0;
-            *texcoords.wrapping_add(2) = 0.5;
-            *texcoords.wrapping_add(3) = 1.0;
-
-            *vertices.wrapping_add(6) = 0.0;
-            *vertices.wrapping_add(7) = 10.0;
-            *vertices.wrapping_add(8) = 0.0;
-            *normals.wrapping_add(6) = 0.0;
-            *normals.wrapping_add(7) = 1.0;
-            *normals.wrapping_add(8) = 0.0;
-            *texcoords.wrapping_add(4) = 1.0;
-            *texcoords.wrapping_add(5) = 0.0;
-
-            let colors: *mut u8 = libc::malloc(mem::size_of::<u8>() * 4 * vertex_count as usize) as *mut u8;
-            for i in 0..3 as usize {
-                *colors.wrapping_add(i * 4 + 0) = 0;
-                *colors.wrapping_add(i * 4 + 1) = 128;
-                *colors.wrapping_add(i * 4 + 2) = 255;
-                *colors.wrapping_add(i * 4 + 3) = 255;
-            }
-
-            let indices: *mut u16 = libc::malloc(mem::size_of::<u16>() * 3) as *mut u16;
-
-            *indices.add(0) = 0;
-            *indices.add(1) = 1;
-            *indices.add(2) = 2;
-            let vbo: *mut u32 = libc::malloc(mem::size_of::<u32>() * 7) as *mut u32;
-            for i in 0..7 {
-                *vbo.wrapping_add(i) = 0;
-            }
-            let mesh = ffi::Mesh{
-                vertexCount: vertex_count,
-                triangleCount: triangle_count,
-                vertices,
-                texcoords,
-                texcoords2: texcoords,
-                normals,
-                tangents: 0 as *mut f32,
-                colors: 0 as *mut u8,
-                indices,
-                animVertices: 0 as *mut f32,
-                animNormals: 0 as *mut f32,
-                boneIds: 0 as *mut u8,
-                boneWeights: 0 as *mut f32,
-                vaoId: 0,
-                vboId: vbo,
-            };
-
-            self.model = rl.load_model_from_mesh(thread, WeakMesh::from_raw(mesh)).expect("Error")
-            */
-            /*
-            let mesh = ffi::GenMeshCube(1.0, 1.0, 1.0);
-            *mesh.vertices = 10.0;
-            *mesh.normals.wrapping_add(0) = 0.07054;
-            *mesh.normals.wrapping_add(1) = 0.70535;
-            *mesh.normals.wrapping_add(2) = 0.70535;
-
-            self.mesh = mesh;
-            self.model = rl.load_model_from_mesh(thread, WeakMesh::from_raw(mesh)).expect("Error loading mesh");
-            */
-            self.mesh = GenChunkMesh(self, seed);
-            self.model = rl.load_model_from_mesh(thread, WeakMesh::from_raw(self.mesh)).expect("Error loading mesh");
-            println!("{:#?}", self.mesh)
-        }
-
-    }
     
-    
-    fn add_voxel(&mut self, voxel: Voxel) {
-        let x = (voxel.xz & 0xF) as usize;
-        let y = voxel.y as usize;
-        self.voxels[x][y].push(voxel);
-        self.voxels[x][y].sort_by(|a, b| a.compare_by_z(&b));
+    fn add_pixel(&mut self, pixel: Pixel) {
+        let x = pixel.x as usize;
+        let y = pixel.y as usize;
+        self.pixels[x].push(pixel);
+        self.pixels[x].sort_by(|a, b| a.compare_by_y(&b));
     }
 
-    fn get_voxel(&self, x: usize, y: usize, z: usize) -> Result<&Voxel, usize> {
-        match self.voxels[x][y].binary_search_by(|a| (a.xz >> 4).cmp(&(z as u8))) {
-            Ok(i) => Ok(&self.voxels[x][y][i]),
+    fn get_pixel(&self, x: usize, y: usize) -> Result<&Pixel, usize> {
+        match self.pixels[x].binary_search_by(|a| (a.y).cmp(&(y as u8))) {
+            Ok(i) => Ok(&self.pixels[x][i]),
             Err(i) => Err(i)
         }
     }
@@ -421,7 +207,7 @@ fn main() {
     // rl.set_target_fps(60);
     // rl.disable_cursor();
     // set up player
-    let mut player = Player::new(Vector3::zero());
+    let mut player = Player::new(Vector2::zero());
     let mut world = World::new();
     for x in 0..4 {
         for z in 0..4 {
@@ -430,72 +216,46 @@ fn main() {
     }
     // println!("{:?}", world.chunks[0].voxels);
     // mainloop
-    let mut vel = Vector3::zero();
+    let mut vel = Vector2::zero();
     println!("MAINLOOP STARTING");
     while !rl.window_should_close() {
         let delta = rl.get_frame_time();
         let _time = rl.get_time() as f32;
         // process input
-        let mdelta = rl.get_mouse_delta(); // get mouse input
-        let cam_angle = player.get_look_direction_vec2(); // get current yaw & pitch
 
-        if (mdelta != Vector2 { x: 0.0, y: 0.0 }) {
-            let new_cam_angle = Vector2 {
-                x: cam_angle.x - mdelta.x / 180.0 * PI,
-                y: cam_angle.y - (mdelta.y / 180.0 * PI),
-            }; // construct new yaw & pitch vector
-            player.set_look_direction_vec2(new_cam_angle);
-        }
         let mut inputs = Vector2::zero();
         if rl.is_key_down(KeyboardKey::KEY_W) {
-            inputs.x += 1.0;
-        }
-        if rl.is_key_down(KeyboardKey::KEY_S) {
-            inputs.x -= 1.0;
-        }
-        if rl.is_key_down(KeyboardKey::KEY_D) {
-            inputs.y += 1.0;
-        }
-        if rl.is_key_down(KeyboardKey::KEY_A) {
             inputs.y -= 1.0;
         }
-
-        let cam_vec2 = Vector2 {
-            x: player.get_look_direction().x,
-            y: player.get_look_direction().z,
+        if rl.is_key_down(KeyboardKey::KEY_S) {
+            inputs.y += 1.0;
         }
-        .normalized();
-        inputs.normalize();
-        inputs = Vector2::new(
-            inputs.x * cam_vec2.x - inputs.y * cam_vec2.y,
-            inputs.y * cam_vec2.x + inputs.x * cam_vec2.y,
-        )
-        .normalized()
-            * SPEED;
+        if rl.is_key_down(KeyboardKey::KEY_D) {
+            inputs.x += 1.0;
+        }
+        if rl.is_key_down(KeyboardKey::KEY_A) {
+            inputs.x -= 1.0;
+        }
+        
         vel.x = inputs.x;
-        vel.z = inputs.y;
-        if player.position.y > 0.0 {
-            vel.y -= 9.81 * 4.20 * delta;
+        if player.position.y < (rl.get_screen_height() as f32 / SCALE as f32 - player.size.y) {
+            vel.y += 9.81 * delta;
         } else {
-            vel.y = -player.position.y;
-        }
-        if rl.is_key_pressed(KeyboardKey::KEY_SPACE) {
-            vel.y += 32.0;
+            vel.y = 0.0;
+            player.move_self(Vector2 { x: 0.0, y: rl.get_screen_height() as f32 / SCALE as f32 - player.position.y - player.size.y });
         }
 
-        player.move_camera(vel * delta);
-        if player.position.y < 0.0 {
-            player.move_camera(Vector3 {
-                x: 0.0,
-                y: -player.position.y,
-                z: 0.0,
-            });
+        if rl.is_key_pressed(KeyboardKey::KEY_SPACE) || inputs.y < 0.0 {
+            vel.y -= 3.20;
         }
+
+        player.move_self(vel);
         // set up drawing
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(prelude::Color::BLACK);
         // use d for 2d drawing here (background)
-
+        let mut d2d = d.begin_mode2D(player.camera);
+        /*
         let mut d3d = d.begin_mode3D(player.camera);
 
         // use d3d for 3d drawing here
@@ -521,8 +281,12 @@ fn main() {
             prelude::Color::LIME,
         );
         drop(d3d);
+        */
         // use d for 2d drawing here (overlay)
-
+        d2d.draw_world(&world);
+        d2d.draw_player(&player);
+        drop(d2d);
         d.draw_fps(10, 10);
+        d.draw_text(&(format!("{}, {}", player.position.x, player.position.y).as_str()), 10, 30, 20, Color {r:0, g: 179, b: 0, a: 255});
     }
 }
