@@ -1,13 +1,15 @@
 use ::core::time;
-use std::fmt::{self, format, Debug};
+use std::{fmt::{self, format, Debug}, sync::Arc};
 use ffi::{Color};
+use libc::{PRIO_MIN, SECCOMP_RET_KILL_THREAD};
 use raylib::prelude::*;
+use rand::prelude::*;
 use worldgen::noise::{perlin::PerlinNoise, NoiseProvider};
 
 const SPEED: f32 = 32.0;
 const SCALE: i32 = 4;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 enum PixelMaterial {
     AIR,
@@ -35,15 +37,18 @@ struct Chunk {
 }
 
 struct World {
-    chunks: Vec<Chunk>,
+    chunks: Vec<Vec<Chunk>>,
     noise: worldgen::noise::perlin::PerlinNoise,
     seed: u64,
+    rng: ThreadRng,
+    modified: bool
 }
 
 trait WorldDraw {
     fn draw_chunk(&mut self, chunk: &Chunk);
-    fn draw_world(&mut self, world: &World);
+    fn draw_world(&mut self, world: &mut World, camera: &Camera2D, screendims: Vector2);
     fn draw_player(&mut self, player: &Player);
+    fn get_visible_chunks(&mut self, camera: &Camera2D, screendims: Vector2) -> [::core::ops::Range<i64>; 2];
 }
 
 impl Player {
@@ -55,7 +60,7 @@ impl Player {
                 y: 16.0
             }, 
             camera: Camera2D {
-                offset: position,
+                offset: Vector2 { x: 0.0, y: 0.0 },
                 target: position,
                 rotation: 0.0,
                 zoom: 1.0
@@ -68,10 +73,12 @@ impl Player {
         player
     }
     // move camera without changing yaw & pitch
-    fn move_self(&mut self, delta: Vector2) {
-        self.position += delta;
-        self.camera.offset += delta;
-        self.camera.target += delta;
+    fn move_self(&mut self, delta: Vector2, world: &mut World) {
+        let newpos = self.position + delta;
+        self.position = newpos;
+        self.camera.target = newpos * SCALE as f32;
+        // self.camera.target -= (self.camera.target / SCALE as f32 - self.position) / 3.0;
+        // self.camera.offset += delta;
     }
 }
 
@@ -82,6 +89,12 @@ impl Debug for Pixel {
             .field("x", &self.x)
             .field("y", &self.y)
             .finish()
+    }
+}
+
+impl Debug for Chunk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Chunk").field("x", &self.x).field("y", &self.y).finish()
     }
 }
 
@@ -104,15 +117,27 @@ impl WorldDraw for RaylibMode2D<'_, RaylibDrawHandle<'_>> {
         self.draw_rectangle(player.position.x as i32 * SCALE, player.position.y as i32 * SCALE, player.size.x as i32 * SCALE, player.size.y as i32 * SCALE, Color {r: 255, g: 255, b: 255, a: 255});
     }
 
-    fn draw_world(&mut self, world: &World) {
-        for chunk in &world.chunks {
-            self.draw_chunk(chunk);
+    fn draw_world(&mut self, world: &mut World, camera: &Camera2D, screendims: Vector2) {
+        let visible = self.get_visible_chunks(camera, screendims);
+        for y in visible[1].clone() {
+            for x in visible[0].clone() {
+                self.draw_chunk(world.get_chunk(x, y));
+            }
         }
+    }
+    
+    fn get_visible_chunks(&mut self, camera: &Camera2D, screendims: Vector2) -> [::core::ops::Range<i64>; 2] {
+        let min = ((camera.target + camera.offset) - Vector2{x: 64.0, y: 128.0} - screendims) / 16.0 / SCALE as f32;
+        let max = ((camera.target + camera.offset) + Vector2{x: 64.0, y: 128.0}) / 16.0 / SCALE as f32;
+        [
+            min.x as i64..max.x as i64,
+            min.y as i64..max.y as i64
+        ]
     }
 }
 
 impl Chunk {
-    fn new(rl: &mut RaylibHandle, x: i64, y: i64, thread: &RaylibThread) -> Chunk {
+    fn new(x: i64, y: i64) -> Chunk {
         let mut pixels = Vec::with_capacity(16) as Vec<Vec<Pixel>>;
         for x in 0..16 as usize {
             pixels.push(Vec::with_capacity(16) as Vec<Pixel>);
@@ -133,30 +158,45 @@ impl Chunk {
     }
 
     fn generate(
-        rl: &mut RaylibHandle,
         chunk_x: i64,
         chunk_y: i64,
         noise: &PerlinNoise,
         seed: u64,
-        thread: &RaylibThread,
     ) -> Self {
-        let mut chunk = Chunk::new(rl, chunk_x * 16, chunk_y * 16, thread);
+        let mut chunk = Chunk::new(chunk_x * 16, chunk_y * 16);
         for x in 0..16 {
             for y in 0..16 {
-                chunk.add_pixel(
-                    Pixel {
-                        color: Color {
-                            r: (x * 16) as u8,
-                            g: 255,
-                            b: (y * 16) as u8,
-                            a: 255,
+                let val = noise.generate((x + chunk_x * 16) as f64 / 320.0, (y + chunk_y * 16) as f64 / 128.0, seed);
+                if val > 64.0/256.0 {
+                    chunk.add_pixel(
+                        Pixel {
+                            color: Color {
+                                r: (x * 16) as u8,
+                                g: 255,
+                                b: (y * 16) as u8,
+                                a: 255,
+                            }
+                            .into(),
+                            material: PixelMaterial::BLOCK,
+                            x: x as u8,
+                            y: y as u8
                         }
-                        .into(),
-                        material: PixelMaterial::BLOCK,
-                        x: x as u8,
-                        y: y as u8
-                    }
-                );
+                    );
+                } else {
+                    chunk.add_pixel(
+                        Pixel {
+                            color: Color {
+                                r: (val * 255.0) as u8,
+                                g: (val * 255.0) as u8,
+                                b: (val * 255.0) as u8,
+                                a: 255
+                            }.into(),
+                            x: x as u8,
+                            y: y as u8,
+                            material: PixelMaterial::AIR
+                        }
+                    );
+                }
                 // println!("{}", noise.generate((chunk_x * 16 + x) as f64 / 32.0, (chunk_z * 16 + z) as f64 / 32.0, seed));
             }
         }
@@ -182,17 +222,65 @@ impl Chunk {
 impl World {
     fn new() -> Self {
         let noise = PerlinNoise::new();
+        let mut rng = rand::rng();
         World {
-            chunks: Vec::new() as Vec<Chunk>,
+            chunks: Vec::new() as Vec<Vec<Chunk>>,
             noise,
-            seed: 69420,
+            seed: rng.random::<u64>(),
+            rng,
+            modified: false
         }
     }
 
-    fn generate_chunk(&mut self, rl: &mut RaylibHandle, chunk_x: i64, chunk_z: i64, thread: &RaylibThread) {
-        self.chunks.push(Chunk::generate(rl, chunk_x, chunk_z, &self.noise, self.seed, thread));
+    fn generate_chunk(&mut self, chunk_x: i64, chunk_y: i64) {
+        let row = match self.chunks.binary_search_by(|row| row[0].y.cmp(&chunk_y)) {
+            Ok(row) => row,
+            Err(_) => {
+                self.chunks.push(Vec::new() as Vec<Chunk>);
+                self.chunks.len() - 1
+            }
+        };
+        self.chunks[row].push(Chunk::generate(chunk_x, chunk_y, &self.noise, self.seed));
+        self.modified = true;
         // self.chunks.push(Chunk::new(rl, chunk_x, chunk_z, thread));
     }
+    
+    fn sort_chunks(&mut self) {
+        self.chunks.sort_by(|ra, rb| ra[0].y.cmp(&rb[0].y));
+        for i in 0..self.chunks.len() {
+            self.chunks[i].sort_by(|ca, cb| ca.x.cmp(&cb.x));
+        }
+        self.modified = false;
+    }
+
+    fn get_chunk(&mut self, x: i64, y: i64) -> &Chunk {
+        let row = match self.chunks.binary_search_by(|r| r[0].y.cmp(&(y * 16))) {
+            Ok(r) => r,
+            Err(_) => {
+                self.chunks.push(Vec::new() as Vec<Chunk>);
+                self.chunks.len() - 1
+            }
+        };
+        let col = match self.chunks[row].binary_search_by(|c| c.x.cmp(&(x * 16))) {
+            Ok(col) => col,
+            Err(_) => {
+                // println!("generating ({}, {})", x, y);
+                self.chunks[row].push(Chunk::generate(x, y, &self.noise, self.seed));
+                self.modified = true;
+                self.chunks[row].len() - 1
+            }
+        };
+        &self.chunks[row][col]
+    }
+
+    fn get_pixel(&mut self, x: i64, y: i64) -> &Pixel {
+        // 0b100000 >> 4 = 0b000010
+        let chunk = self.get_chunk(x >> 4, y >> 4);
+        match chunk.get_pixel((x as usize) % 16 , (y as usize) % 16) {
+            Ok(P) => P,
+            Err(_) => panic!("pixel not found! (how?)")
+        }
+    }    
 }
 
 fn main() {
@@ -203,22 +291,37 @@ fn main() {
         .size(640, 480)
         .title("Spellcoder")
         .build();
-    
-    // rl.set_target_fps(60);
+    // rl.set_target_fps(2);
     // rl.disable_cursor();
     // set up player
     let mut player = Player::new(Vector2::zero());
+    player.camera.offset = Vector2 {
+        x: rl.get_screen_width() as f32 / 2.0,
+        y: rl.get_screen_height() as f32 / 2.0
+    };
     let mut world = World::new();
-    for x in 0..4 {
-        for z in 0..4 {
-            world.generate_chunk(&mut rl, x, z, &thread);
-        }
-    }
+    // for x in -16..16 {
+    //     for y in -16..16 {
+    //         world.generate_chunk(x, y,);
+    //     }
+    // }
     // println!("{:?}", world.chunks[0].voxels);
     // mainloop
     let mut vel = Vector2::zero();
+    // let mut screen_dim = Vector2 {x: }
     println!("MAINLOOP STARTING");
+    let mut screendim = Vector2 {x: rl.get_screen_width() as f32, y: rl.get_screen_height() as f32};
     while !rl.window_should_close() {
+        let width = rl.get_screen_width() as f32;
+        if screendim.x != width {
+            screendim.x = width;
+            player.camera.offset.x = screendim.x / 2.0;
+        }
+        let height = rl.get_screen_height() as f32;
+        if screendim.y != height {
+            screendim.y = height;
+            player.camera.offset.y = screendim.y / 2.0;
+        }
         let delta = rl.get_frame_time();
         let _time = rl.get_time() as f32;
         // process input
@@ -238,18 +341,87 @@ fn main() {
         }
         
         vel.x = inputs.x;
-        if player.position.y < (rl.get_screen_height() as f32 / SCALE as f32 - player.size.y) {
-            vel.y += 9.81 * delta;
-        } else {
-            vel.y = 0.0;
-            player.move_self(Vector2 { x: 0.0, y: rl.get_screen_height() as f32 / SCALE as f32 - player.position.y - player.size.y });
+        let mut newpos = player.position + delta;
+        let mut emptycount = 0;
+        for x in (newpos.x as i64)..(newpos.x as i64 + 8) {
+            let bottompx = world.get_pixel(x, newpos.y as i64 + 16);
+            if bottompx.material == PixelMaterial::AIR {emptycount += 1;}
+            else {
+                let mut toppx = bottompx;
+                let mut y = newpos.y as i64 + 16;
+                while toppx.material != PixelMaterial::AIR {
+                    toppx = world.get_pixel(x, y);
+                    y -= 1;
+                }
+                vel.y = 0.0;
+                // println!("{:#?}, {}", toppx, y);
+                if newpos.y > y as f32 - 14.0 {
+                    newpos.y = y as f32 - 14.0;
+                }
+                player.position.y = newpos.y;
+            }
+        }
+        if emptycount == 8 {vel.y += 9.81 * delta;}
+
+        for x in (newpos.x as i64)..(newpos.x as i64 + 8) {
+            let bottompx = world.get_pixel(x, newpos.y as i64);
+            if bottompx.material != PixelMaterial::AIR {
+                let mut toppx = bottompx;
+                let mut y = newpos.y as i64;
+                while toppx.material != PixelMaterial::AIR {
+                    toppx = world.get_pixel(x, y);
+                    y += 1;
+                }
+                vel.y = 0.0;
+                // println!("{:#?}, {}", toppx, y);
+                if newpos.y < y as f32 + 2.0 {
+                    newpos.y = y as f32 + 2.0;
+                }
+                player.position.y = newpos.y;
+            }
+        }     
+
+        for y in (newpos.y as i64)..(newpos.y as i64 + 12) {
+            let bottompx = world.get_pixel(newpos.x as i64, y);
+            if bottompx.material != PixelMaterial::AIR {
+                let mut toppx = bottompx;
+                let mut x = newpos.x as i64;
+                while toppx.material != PixelMaterial::AIR {
+                    toppx = world.get_pixel(x, y);
+                    x += 1;
+                }
+                vel.x = 0.0;
+                // println!("{:#?}, {}", toppx, y);
+                if newpos.x < x as f32 - 3.0 {
+                    newpos.x = x as f32 - 3.0;
+                }
+                player.position.x = newpos.x;
+            }
         }
 
-        if rl.is_key_pressed(KeyboardKey::KEY_SPACE) || inputs.y < 0.0 {
+        for y in (newpos.y as i64)..(newpos.y as i64 + 12) {
+            let bottompx = world.get_pixel(newpos.x as i64 + 8, y);
+            if bottompx.material != PixelMaterial::AIR {
+                let mut toppx = bottompx;
+                let mut x = newpos.x as i64 + 8;
+                while toppx.material != PixelMaterial::AIR {
+                    toppx = world.get_pixel(x, y);
+                    x -= 1;
+                }
+                vel.x = 0.0;
+                // println!("{:#?}, {}", toppx, y);
+                if newpos.x > x as f32 + 5.0 {
+                    newpos.x = x as f32 + 5.0;
+                }
+                player.position.x = newpos.x;
+            }
+        }
+
+        if (rl.is_key_pressed(KeyboardKey::KEY_SPACE) || inputs.y < 0.0) && vel.y == 0.0 {
             vel.y -= 3.20;
         }
 
-        player.move_self(vel);
+        player.move_self(vel, &mut world);
         // set up drawing
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(prelude::Color::BLACK);
@@ -283,10 +455,15 @@ fn main() {
         drop(d3d);
         */
         // use d for 2d drawing here (overlay)
-        d2d.draw_world(&world);
+        d2d.draw_world(&mut world, &player.camera, screendim);
         d2d.draw_player(&player);
         drop(d2d);
         d.draw_fps(10, 10);
         d.draw_text(&(format!("{}, {}", player.position.x, player.position.y).as_str()), 10, 30, 20, Color {r:0, g: 179, b: 0, a: 255});
+        d.draw_text(&(format!("{}, {}", vel.x, vel.y).as_str()), 10, 50, 20, Color {r:0, g: 179, b: 0, a: 255});
+        // world.sort_chunks();
+        if world.modified {
+            world.sort_chunks();
+        }
     }
 }
