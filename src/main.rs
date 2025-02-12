@@ -1,12 +1,13 @@
-use ::core::time;
-use std::{fmt::{self, format, Debug}, sync::Arc};
-use ffi::{Color};
-use libc::{PRIO_MIN, SECCOMP_RET_KILL_THREAD};
+use glob::glob;
+use json::{object::Object, JsonValue};
+use safer_ffi::char_p::new;
+use std::{fmt::{self, Debug}, fs::read_to_string};
+use ffi::Color;
 use raylib::prelude::*;
 use rand::prelude::*;
 use worldgen::noise::{perlin::PerlinNoise, NoiseProvider};
 
-const SPEED: f32 = 32.0;
+const SPEED: f32 = 2.0;
 const SCALE: i32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -73,11 +74,10 @@ impl Player {
         player
     }
     // move camera without changing yaw & pitch
-    fn move_self(&mut self, delta: Vector2, world: &mut World) {
+    fn move_self(&mut self, delta: Vector2) {
         let newpos = self.position + delta;
         self.position = newpos;
-        self.camera.target = newpos * SCALE as f32;
-        // self.camera.target -= (self.camera.target / SCALE as f32 - self.position) / 3.0;
+        self.camera.target -= (self.camera.target / SCALE as f32 - self.position) / 3.0;
         // self.camera.offset += delta;
     }
 }
@@ -139,7 +139,7 @@ impl WorldDraw for RaylibMode2D<'_, RaylibDrawHandle<'_>> {
 impl Chunk {
     fn new(x: i64, y: i64) -> Chunk {
         let mut pixels = Vec::with_capacity(16) as Vec<Vec<Pixel>>;
-        for x in 0..16 as usize {
+        for _x in 0..16 as usize {
             pixels.push(Vec::with_capacity(16) as Vec<Pixel>);
         }
         let chunk = Chunk {
@@ -206,7 +206,7 @@ impl Chunk {
     
     fn add_pixel(&mut self, pixel: Pixel) {
         let x = pixel.x as usize;
-        let y = pixel.y as usize;
+        // let y = pixel.y as usize;
         self.pixels[x].push(pixel);
         self.pixels[x].sort_by(|a, b| a.compare_by_y(&b));
     }
@@ -277,13 +277,25 @@ impl World {
         // 0b100000 >> 4 = 0b000010
         let chunk = self.get_chunk(x >> 4, y >> 4);
         match chunk.get_pixel((x as usize) % 16 , (y as usize) % 16) {
-            Ok(P) => P,
+            Ok(p) => p,
             Err(_) => panic!("pixel not found! (how?)")
         }
     }    
 }
 
 fn main() {
+    let mut spells: Vec<JsonValue> = Vec::new() as Vec<JsonValue>;
+    let spellpaths = glob("./spells/*.json").unwrap();
+    for spellpath in spellpaths {
+        match spellpath {
+            Err(e) => println!("{:#?}", e),
+            Ok(s) => {
+                let contents = read_to_string(s).unwrap();
+                let sp = json::parse(&contents).unwrap();
+                spells.push(sp);
+            }
+        };
+    }
     // set up window
     let (mut rl, thread) = raylib::init()
         // .fullscreen()
@@ -340,7 +352,7 @@ fn main() {
             inputs.x -= 1.0;
         }
         
-        vel.x = inputs.x;
+        vel.x = inputs.x * SPEED;
         let mut newpos = player.position + delta;
         let mut emptycount = 0;
         for x in (newpos.x as i64)..(newpos.x as i64 + 8) {
@@ -421,7 +433,7 @@ fn main() {
             vel.y -= 3.20;
         }
 
-        player.move_self(vel, &mut world);
+        player.move_self(vel);
         // set up drawing
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(prelude::Color::BLACK);
