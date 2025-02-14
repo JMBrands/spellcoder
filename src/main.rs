@@ -21,6 +21,12 @@ struct Player {
     position: Vector2,
     size: Vector2,
     camera: Camera2D,
+    mp: f32,
+    hp: f32,
+    sp: f32,
+    max_mp: f32,
+    max_hp: f32,
+    max_sp: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -50,6 +56,7 @@ trait WorldDraw {
     fn draw_world(&mut self, world: &mut World, camera: &Camera2D, screendims: Vector2);
     fn draw_player(&mut self, player: &Player);
     fn get_visible_chunks(&mut self, camera: &Camera2D, screendims: Vector2) -> [::core::ops::Range<i64>; 2];
+    fn draw_hud(&mut self, world: &World, player: &Player);
 }
 
 impl Player {
@@ -65,7 +72,13 @@ impl Player {
                 target: position,
                 rotation: 0.0,
                 zoom: 1.0
-            }
+            },
+            mp: 100.0,
+            hp: 100.0,
+            sp: 100.0,
+            max_mp: 100.0,
+            max_hp: 100.0,
+            max_sp: 100.0,
         };
         // player.set_look_direction_vec2(Vector2 {
         //     x: 0.0,
@@ -133,6 +146,22 @@ impl WorldDraw for RaylibMode2D<'_, RaylibDrawHandle<'_>> {
             min.x as i64..max.x as i64,
             min.y as i64..max.y as i64
         ]
+    }
+    
+    fn draw_hud(&mut self, world: &World, player: &Player) {
+        let hpcol = Color {
+            r: 255 - (player.hp / player.max_hp * 255.0) as u8,
+            g: (player.hp / player.max_hp * 255.0) as u8,
+            b: 0,
+            a: 255,
+        };
+
+        let mpcol = Color {
+            r: 0,
+            g: 0u8.max((player.mp / player.max_mp * 255.0) as u8 - 128),
+            b: (player.mp / player.max_mp * 191) + 64,
+            a: 255,
+        };
     }
 }
 
@@ -291,7 +320,7 @@ fn main() {
             Err(e) => println!("{:#?}", e),
             Ok(s) => {
                 let contents = read_to_string(s).unwrap();
-                let sp = json::parse(&contents).unwrap();
+                let sp = jzon::parse(&contents).unwrap();
                 spells.push(sp);
             }
         };
