@@ -1,8 +1,9 @@
 use ffi::Color;
 use glob::glob;
-use jzon::{object::Object, JsonValue};
+use interpolation::{self, Ease, EaseFunction};
+use jzon::{object::Object, parse, JsonValue};
 use rand::prelude::*;
-use raylib::prelude::*;
+use raylib::{ease::quad_in, prelude::*};
 use std::{
     fmt::{self, Debug},
     fs::read_to_string,
@@ -17,6 +18,21 @@ const SCALE: i32 = 4;
 enum PixelMaterial {
     AIR,
     BLOCK,
+}
+
+enum SpellComponent<'a> {
+    SetPixel(i32, i32, PixelMaterial, Color, Events<'a>),
+    Damage(&'a Player, f64),
+    Nothing
+}
+
+struct Spell<'a> {
+    name: String,
+    components: Vec<SpellComponent<'a>>,
+}
+
+struct Events<'a> {
+    on_touch: Vec<SpellComponent<'a>>,
 }
 
 struct Player {
@@ -66,6 +82,7 @@ trait WorldDraw {
 trait HUDDraw {
     fn draw_hud(&mut self, world: &World, player: &Player);
 }
+
 impl Player {
     fn new(position: Vector2) -> Self {
         let player = Player {
@@ -237,6 +254,7 @@ impl HUDDraw for RaylibDrawHandle<'_> {
         );
     }
 }
+
 impl Chunk {
     fn new(x: i64, y: i64) -> Chunk {
         let mut pixels = Vec::with_capacity(16) as Vec<Vec<Pixel>>;
@@ -263,33 +281,83 @@ impl Chunk {
                     (y + chunk_y * 16) as f64 / 128.0,
                     seed,
                 );
-                if val > 64.0 / 256.0 {
-                    chunk.add_pixel(Pixel {
-                        color: Color {
-                            r: (x * 16) as u8,
-                            g: 255,
-                            b: (y * 16) as u8,
-                            a: 255,
-                        }
-                        .into(),
-                        material: PixelMaterial::BLOCK,
-                        x: x as u8,
-                        y: y as u8,
-                    });
-                } else {
-                    chunk.add_pixel(Pixel {
-                        color: Color {
-                            r: (val * 255.0) as u8,
-                            g: (val * 255.0) as u8,
-                            b: (val * 255.0) as u8,
-                            a: 255,
-                        }
-                        .into(),
-                        x: x as u8,
-                        y: y as u8,
-                        material: PixelMaterial::AIR,
-                    });
+                match val {
+                    val if val > 80.0 / 256.0 => {
+                        let gval = (noise.generate(
+                            (x + chunk_x * 16) as f64 / 32.0,
+                            (y + chunk_y * 16) as f64 / 32.0,
+                            seed,
+                        ) * 16.0
+                            + 128.0) as u8;
+                        chunk.add_pixel(Pixel {
+                            color: Color {
+                                r: gval,
+                                g: gval,
+                                b: gval,
+                                a: 255,
+                            }
+                            .into(),
+                            material: PixelMaterial::BLOCK,
+                            x: x as u8,
+                            y: y as u8,
+                        });
+                    }
+                    val if val > 64.0 / 256.0 => {
+                        let gval = (noise.generate(
+                            (x + chunk_x * 16) as f64 / 32.0,
+                            (y + chunk_y * 16) as f64 / 32.0,
+                            seed,
+                        ) * 32.0
+                            + 128.0) as u8;
+                        chunk.add_pixel(Pixel {
+                            color: Color {
+                                r: 0,
+                                g: gval,
+                                b: 0,
+                                a: 255,
+                            }
+                            .into(),
+                            material: PixelMaterial::BLOCK,
+                            x: x as u8,
+                            y: y as u8,
+                        });
+                    }
+                    val if val < 64.0 / 256.0 => {
+                        let gval = (noise.generate(
+                            (x + chunk_x * 16) as f64 / 96.0,
+                            (y + chunk_y * 16) as f64 / 32.0,
+                            seed,
+                        ));
+                        chunk.add_pixel(Pixel {
+                            color: Color {
+                                r: 255,
+                                g: 255,
+                                b: 255,
+                                a: ((gval * 200.0 * (64.0 / 256.0 - val).cubic_out().cubic_out())
+                                    .clamp(0.0, 255.0) as u8),
+                            }
+                            .into(),
+                            material: PixelMaterial::AIR,
+                            x: x as u8,
+                            y: y as u8,
+                        });
+                    }
+                    _ => {
+                        chunk.add_pixel(Pixel {
+                            color: Color {
+                                g: 0,
+                                b: 0,
+                                r: 0,
+                                a: 0,
+                            }
+                            .into(),
+                            x: x as u8,
+                            y: y as u8,
+                            material: PixelMaterial::AIR,
+                        });
+                    }
                 }
+
                 // println!("{}", noise.generate((chunk_x * 16 + x) as f64 / 32.0, (chunk_z * 16 + z) as f64 / 32.0, seed));
             }
         }
@@ -301,7 +369,7 @@ impl Chunk {
         let x = pixel.x as usize;
         // let y = pixel.y as usize;
         self.pixels[x].push(pixel);
-        self.pixels[x].sort_by(|a, b| a.compare_by_y(&b));
+        self.pixels[x].sort_by(|a, B| a.compare_by_y(&B));
     }
 
     fn get_pixel(&self, x: usize, y: usize) -> Result<&Pixel, usize> {
@@ -376,23 +444,39 @@ impl World {
     }
 }
 
-fn main() {
-    let mut spells: Vec<JsonValue> = Vec::new() as Vec<JsonValue>;
-    let spellpaths = glob("./spells/*.json").unwrap();
-    for spellpath in spellpaths {
-        match spellpath {
-            Err(e) => println!("{:#?}", e),
-            Ok(s) => {
-                let contents = read_to_string(s).unwrap();
-                let sp = jzon::parse(&contents).unwrap();
-                spells.push(sp);
-            }
-        };
+fn parse_components<'a>(components: &mut Vec<SpellComponent<'a>>, json: &JsonValue, player: &'a Player) {
+    for comp in json.as_array().unwrap() {
+        components.push(match comp["type"].as_str().unwrap() {
+            "setpixel" => SpellComponent::SetPixel(
+                comp["position"]["x"].as_i32().unwrap(),
+                comp["position"]["y"].as_i32().unwrap(),
+                match comp["material"].as_str().unwrap() {
+                    "air" => PixelMaterial::AIR,
+                    "block" => PixelMaterial::BLOCK,
+                    _ => PixelMaterial::AIR,
+                },
+                prelude::Color::from_hex(comp["color"].as_str().unwrap()).unwrap().into(),
+                Events { on_touch: 
+                    if comp["events"].has_key("on_touch") {
+                        let mut tch_comps = Vec::new() as Vec<SpellComponent>;
+                        parse_components(&mut tch_comps, &comp["events"]["on_touch"], player);
+                        tch_comps
+                    } else {
+                        vec![SpellComponent::Nothing]
+                    }
+                }
+            ),
+            "damage" => SpellComponent::Damage(player, comp["amount"].as_f64().unwrap()),
+            _ => SpellComponent::Nothing
+        });
     }
+}
+
+fn main() {
     // set up window
     let (mut rl, thread) = raylib::init()
-        // .fullscreen()
-        .vsync()
+    // .fullscreen()
+    .vsync()
         .size(640, 480)
         .title("Spellcoder")
         .build();
@@ -405,6 +489,27 @@ fn main() {
         y: rl.get_screen_height() as f32 / 2.0,
     };
     let mut world = World::new();
+    
+    let mut spells: Vec<Spell> = Vec::new() as Vec<Spell>;
+    let spellpaths = glob("./spells/*.json").unwrap();
+    for spellpath in spellpaths {
+        match spellpath {
+            Err(e) => println!("{:#?}", e),
+            Ok(s) => {
+                let contents = read_to_string(s).unwrap();
+                let sp = jzon::parse(&contents).unwrap();
+                for s in sp.as_array().unwrap() {
+                    // println!("{:#?}", s["components"][0]["position"]["x"]);
+                    let mut components = Vec::new() as Vec<SpellComponent>;
+                    parse_components(&mut components, &s["components"], &player);
+                    spells.push(Spell {
+                        name: String::from(s["name"].as_str().unwrap()),
+                        components
+                    });
+                }
+            }
+        };
+    }
     // for x in -16..16 {
     //     for y in -16..16 {
     //         world.generate_chunk(x, y,);
@@ -422,7 +527,7 @@ fn main() {
     let mut coyoteframes = 10;
     while !rl.window_should_close() {
         if vel.y == 0.0 {
-            coyoteframes = 10;
+            coyoteframes = 5;
         }
         let width = rl.get_screen_width() as f32;
         if screendim.x != width {
@@ -561,40 +666,14 @@ fn main() {
         player.move_self(vel);
         // set up drawing
         let mut d = rl.begin_drawing(&thread);
-        d.clear_background(prelude::Color::BLACK);
-        // use d for 2d drawing here (background)
+        d.clear_background(prelude::Color::CYAN);
+        // use d for 2d drawing background here
         let mut d2d = d.begin_mode2D(player.camera);
-        /*
-        let mut d3d = d.begin_mode3D(player.camera);
-
-        // use d3d for 3d drawing here
-        d3d.draw_grid(32, 1.0);
-        /*unsafe {
-            let mut voxels: [[[CVoxel; 16]; 16]; 65535] = [[[CVoxel {x: 0, y: 0, z: 0, color: Color::BLACK, visible_faces: [6; 6]} ; 16]; 16]; u16::MAX as usize];
-            for x in 0..16 {
-                for y in 0..16 {
-                    for z in 0..u16::MAX as usize {
-                        voxels[x][y][z] = world.chunks[0].voxels[x][y][z].into();
-                    }
-                }
-            }
-            gen_chunk_mesh(voxels);
-        }*/
-        d3d.draw_world(&world);
-        // d3d.draw_model(model, Vector3{x: 0.0, y: 0.0, z: 0.0}, 1.0, Color::WHITE);
-        d3d.draw_bounding_box(
-            BoundingBox {
-                min: player.position,
-                max: player.position + player.size,
-            },
-            prelude::Color::LIME,
-        );
-        drop(d3d);
-        */
-        // use d for 2d drawing here (overlay)
+        // use d2d for 2d drawing game here
         d2d.draw_world(&mut world, &player.camera, screendim);
         d2d.draw_player(&player);
         drop(d2d);
+        // use d for drawing hud here
         d.draw_fps(10, 10);
         d.draw_text(
             &(format!("{}, {}", player.position.x, player.position.y).as_str()),
@@ -625,6 +704,6 @@ fn main() {
         if world.modified {
             world.sort_chunks();
         }
-        coyoteframes = 0.max(coyoteframes - 1);
+        coyoteframes = 0i32.max(coyoteframes - 1);
     }
 }
