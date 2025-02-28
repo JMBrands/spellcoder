@@ -5,7 +5,9 @@ use jzon::{object::Object, parse, JsonValue};
 use rand::prelude::*;
 use raylib::{ease::quad_in, ffi::Font, prelude::*};
 use std::{
-    arch::x86_64, fmt::{self, Debug}, fs::read_to_string
+    arch::x86_64::{self, _XCR_XFEATURE_ENABLED_MASK},
+    fmt::{self, Debug},
+    fs::read_to_string,
 };
 use worldgen::noise::{perlin::PerlinNoise, NoiseProvider};
 
@@ -21,8 +23,9 @@ enum PixelMaterial {
 #[derive(Debug, Clone)]
 enum SpellComponent {
     SetPixel(i64, i64, PixelMaterial, Color, Events),
+    SetLine(i64, i64, i64, i64, PixelMaterial, Color, Events),
     Damage(*mut Player, f32),
-    Nothing
+    Nothing,
 }
 
 #[derive(Debug)]
@@ -58,7 +61,7 @@ struct Pixel {
     y: u8,
     material: PixelMaterial,
     color: ffi::Color,
-    events: Events
+    events: Events,
 }
 
 struct Chunk {
@@ -92,23 +95,22 @@ trait HUDDraw {
 impl SpellComponent {
     fn type_eq(&self, other: &SpellComponent) -> bool {
         match self {
-            Self::SetPixel(_, _, _, _, _) => {
-                match other {
-                    Self::SetPixel(_, _, _, _, _) => return true,
-                    Self::Damage(_a, _b) => return false,
-                    Self::Nothing => return false,
-                }
+            Self::SetPixel(_, _, _, _, _) => match other {
+                Self::SetPixel(_, _, _, _, _) => return true,
+                _ => return false,
             },
             Self::Damage(_, _) => match other {
                 Self::Damage(_, _) => return true,
-                Self::SetPixel(_, _, _, _, _) => return false,
-                Self::Nothing => return false,
+                _ => return false,
             },
             Self::Nothing => match other {
-                SpellComponent::SetPixel(_, _, _, _, _) => return false,
-                SpellComponent::Damage(_, _) => return false,
-                SpellComponent::Nothing => return true,
-            }
+                Self::Nothing => return true,
+                _ => return false,
+            },
+            Self::SetLine(_, _, _, _, _, _, _) => match other {
+                Self::SetLine(_, _, _, _, _, _, _) => return true,
+                _ => return false,
+            },
         }
     }
 }
@@ -160,23 +162,90 @@ impl Player {
             self.mp -= spell.cost;
             for component in &spell.components {
                 match component {
-                    SpellComponent::Damage(target, amount) => unsafe {(self).set_hp((self).hp - *amount)},
+                    SpellComponent::Damage(target, amount) => unsafe {
+                        (self).set_hp((self).hp - *amount)
+                    },
                     SpellComponent::SetPixel(x_rel, y_rel, mat, color, events) => {
                         let x = self.position.x as i64 + x_rel;
                         let y = self.position.y as i64 + y_rel;
-                        world.set_pixel(x, y, Pixel { x: match (x % 16) as u8 {
-                            a if a < 16 => a,
-                            b if b > 240 => b - 240,
-                            e => panic!("no idea how this could happen, x % 16 is {}", e)
-                        }, y: match (y % 16) as u8 {
-                            a if a < 16 => a,
-                            b if b > 240 => b - 240,
-                            e => panic!("no idea how this could happen, y % 16 is {}", e)
-                        }, material: *mat, color: *color,
-                        events: events.clone()
-                    });
-                    },
-                    SpellComponent::Nothing => ()
+                        world.set_pixel(
+                            x,
+                            y,
+                            Pixel {
+                                x: match (x % 16) as u8 {
+                                    a if a < 16 => a,
+                                    b if b > 240 => b - 240,
+                                    e => panic!("no idea how this could happen, x % 16 is {}", e),
+                                },
+                                y: match (y % 16) as u8 {
+                                    a if a < 16 => a,
+                                    b if b > 240 => b - 240,
+                                    e => panic!("no idea how this could happen, y % 16 is {}", e),
+                                },
+                                material: *mat,
+                                color: *color,
+                                events: events.clone(),
+                            },
+                        );
+                    }
+                    SpellComponent::SetLine(x_start, y_start, x_end, y_end, mat, color, events) => {
+                        let sx = self.position.x as i64 + x_start;
+                        let sy = self.position.y as i64 + y_start;
+                        let ex = self.position.x as i64 + x_end;
+                        let ey = self.position.y as i64 + y_end;
+                        if (sx-ex).abs() > (sy-ey).abs() {
+                            for cx in sx..ex {
+                                let p = (cx - sx) as f32 / (ex - sx) as f32;
+                                let cy = sy + ((ey - sy) as f32 * p) as i64;
+                                println!("{} {}", cx, cy);
+                                world.set_pixel(
+                                    cx,
+                                    cy,
+                                    Pixel {
+                                        x: match (cx % 16) as u8 {
+                                            a if a < 16 => a,
+                                            b if b > 240 => b - 240,
+                                            e => panic!("no idea how this could happen, x % 16 is {}", e),
+                                        },
+                                        y: match (cy % 16) as u8 {
+                                            a if a < 16 => a,
+                                            b if b > 240 => b - 240,
+                                            e => panic!("no idea how this could happen, y % 16 is {}", e),
+                                        },
+                                        material: *mat,
+                                        color: *color,
+                                        events: events.clone(),
+                                    },
+                                );
+                            }
+                        } else {
+                            for cy in sy..ey {
+                                let p = (cy - sy) as f32 / (ey - sy) as f32;
+                                let cx = sx + ((ex - sx) as f32 * p) as i64;
+                                println!("{} {}", cx, cy);
+                                world.set_pixel(
+                                    cx,
+                                    cy,
+                                    Pixel {
+                                        x: match (cx % 16) as u8 {
+                                            a if a < 16 => a,
+                                            b if b > 240 => b - 240,
+                                            e => panic!("no idea how this could happen, x % 16 is {}", e),
+                                        },
+                                        y: match (cy % 16) as u8 {
+                                            a if a < 16 => a,
+                                            b if b > 240 => b - 240,
+                                            e => panic!("no idea how this could happen, y % 16 is {}", e),
+                                        },
+                                        material: *mat,
+                                        color: *color,
+                                        events: events.clone(),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    SpellComponent::Nothing => (),
                 }
             }
         }
@@ -272,8 +341,8 @@ impl HUDDraw for RaylibDrawHandle<'_> {
 
         let mpcol = Color {
             r: 0,
-            g: 0u8.max((player.display_mp / player.max_mp * 255.0 - 127.0) as u8),
-            b: (player.display_mp / player.max_mp * 191.0) as u8 + 64,
+            g: 0u8.max((player.display_mp.clamp(0.0, player.max_hp) / player.max_mp * 255.0 - 127.0) as u8),
+            b: (player.display_mp.clamp(0.0, player.max_hp) / player.max_mp * 191.0) as u8 + 64,
             a: 255,
         };
 
@@ -320,7 +389,13 @@ impl HUDDraw for RaylibDrawHandle<'_> {
             spcol,
         );
 
-        self.draw_text(&active_spell.name.as_str(), 15, (max_y / 2.0) as i32, 35, prelude::Color::BLACK);
+        self.draw_text(
+            &active_spell.name.as_str(),
+            15,
+            (max_y / 2.0) as i32,
+            35,
+            prelude::Color::BLACK,
+        );
     }
 }
 
@@ -369,7 +444,9 @@ impl Chunk {
                             material: PixelMaterial::BLOCK,
                             x: x as u8,
                             y: y as u8,
-                            events: Events { on_touch: vec![SpellComponent::Nothing] }
+                            events: Events {
+                                on_touch: vec![SpellComponent::Nothing],
+                            },
                         });
                     }
                     val if val > 64.0 / 256.0 => {
@@ -390,7 +467,9 @@ impl Chunk {
                             material: PixelMaterial::BLOCK,
                             x: x as u8,
                             y: y as u8,
-                            events: Events { on_touch: vec![SpellComponent::Nothing] }
+                            events: Events {
+                                on_touch: vec![SpellComponent::Nothing],
+                            },
                         });
                     }
                     val if val < 64.0 / 256.0 => {
@@ -411,7 +490,9 @@ impl Chunk {
                             material: PixelMaterial::AIR,
                             x: x as u8,
                             y: y as u8,
-                            events: Events { on_touch: vec![SpellComponent::Nothing] }
+                            events: Events {
+                                on_touch: vec![SpellComponent::Nothing],
+                            },
                         });
                     }
                     _ => {
@@ -426,7 +507,9 @@ impl Chunk {
                             x: x as u8,
                             y: y as u8,
                             material: PixelMaterial::AIR,
-                            events: Events { on_touch: vec![SpellComponent::Nothing] }
+                            events: Events {
+                                on_touch: vec![SpellComponent::Nothing],
+                            },
                         });
                     }
                 }
@@ -527,17 +610,21 @@ impl World {
 
     fn set_pixel(&mut self, x: i64, y: i64, pixel: Pixel) {
         let chunk = self.get_chunk(x >> 4, y >> 4);
-        println!("{}", pixel.x);
+        println!("{:#?}", pixel);
         chunk.set_pixel(pixel);
     }
 }
 
-fn parse_components<'a>(components: &mut Vec<SpellComponent>, json: &JsonValue, player: &mut Player) -> f32 {
+fn parse_components<'a>(
+    components: &mut Vec<SpellComponent>,
+    json: &JsonValue,
+    player: &mut Player,
+) -> f32 {
     let mut cost = 0f32;
     for comp in json.as_array().unwrap() {
         components.push(match comp["type"].as_str().unwrap() {
             "setpixel" => {
-                cost += 16.0;
+                cost += 1.0;
                 SpellComponent::SetPixel(
                     comp["position"]["x"].as_i64().unwrap(),
                     comp["position"]["y"].as_i64().unwrap(),
@@ -546,23 +633,65 @@ fn parse_components<'a>(components: &mut Vec<SpellComponent>, json: &JsonValue, 
                         "block" => PixelMaterial::BLOCK,
                         _ => PixelMaterial::AIR,
                     },
-                    prelude::Color::from_hex(comp["color"].as_str().unwrap()).unwrap().into(),
-                    Events { on_touch: 
-                        if comp["events"].has_key("on_touch") {
+                    prelude::Color::from_hex(comp["color"].as_str().unwrap())
+                        .unwrap()
+                        .into(),
+                    Events {
+                        on_touch: if comp["events"].has_key("on_touch") {
                             let mut tch_comps = Vec::new() as Vec<SpellComponent>;
-                            cost += parse_components(&mut tch_comps, &comp["events"]["on_touch"], player) * 1.5;
+                            cost += parse_components(
+                                &mut tch_comps,
+                                &comp["events"]["on_touch"],
+                                player,
+                            ) * 1.5;
                             tch_comps
                         } else {
                             vec![SpellComponent::Nothing]
-                        }
-                    }
+                        },
+                    },
                 )
-            },
+            }
+            "setline" => {
+                let len = ((comp["start"]["x"].as_f32().unwrap()
+                    - comp["end"]["x"].as_f32().unwrap())
+                .powi(2)
+                    + (comp["start"]["y"].as_f32().unwrap() + comp["end"]["y"].as_f32().unwrap())
+                        .powi(2))
+                .sqrt();
+                cost += 0.5 * len;
+                SpellComponent::SetLine(
+                    comp["start"]["x"].as_i64().unwrap(),
+                    comp["start"]["y"].as_i64().unwrap(),
+                    comp["end"]["x"].as_i64().unwrap(),
+                    comp["end"]["y"].as_i64().unwrap(),
+                    match comp["material"].as_str().unwrap() {
+                        "air" => PixelMaterial::AIR,
+                        "block" => PixelMaterial::BLOCK,
+                        _ => PixelMaterial::AIR,
+                    },
+                    prelude::Color::from_hex(comp["color"].as_str().unwrap())
+                        .unwrap()
+                        .into(),
+                    Events {
+                        on_touch: if comp["events"].has_key("on_touch") {
+                            let mut tch_comps = Vec::new() as Vec<SpellComponent>;
+                            cost += parse_components(
+                                &mut tch_comps,
+                                &comp["events"]["on_touch"],
+                                player,
+                            ) * 1.5;
+                            tch_comps
+                        } else {
+                            vec![SpellComponent::Nothing]
+                        },
+                    },
+                )
+            }
             "damage" => {
                 cost += comp["amount"].as_f32().unwrap() * 8.0;
                 SpellComponent::Damage(player, comp["amount"].as_f32().unwrap())
-            },
-            _ => SpellComponent::Nothing
+            }
+            _ => SpellComponent::Nothing,
         });
     }
     cost
@@ -571,8 +700,8 @@ fn parse_components<'a>(components: &mut Vec<SpellComponent>, json: &JsonValue, 
 fn main() {
     // set up window
     let (mut rl, thread) = raylib::init()
-    // .fullscreen()
-    .vsync()
+        // .fullscreen()
+        .vsync()
         .size(640, 480)
         .title("Spellcoder")
         .build();
@@ -585,7 +714,7 @@ fn main() {
         y: rl.get_screen_height() as f32 / 2.0,
     };
     let mut world = World::new();
-    
+
     let mut spells: Vec<Spell> = Vec::new() as Vec<Spell>;
     let spellpaths = glob("./spells/*.json").unwrap();
     for spellpath in spellpaths {
@@ -601,7 +730,7 @@ fn main() {
                     spells.push(Spell {
                         name: String::from(s["name"].as_str().unwrap()),
                         components,
-                        cost
+                        cost,
                     });
                 }
             }
@@ -665,7 +794,7 @@ fn main() {
         }
 
         if rl.is_key_down(KeyboardKey::KEY_L) {
-            player.mp = player.max_mp.min(player.mp + 3.0);
+            player.mp = (player.max_mp * 5.0).min(player.mp + 3.0);
         }
         if rl.is_key_down(KeyboardKey::KEY_K) {
             player.mp = 0f32.max(player.mp - 3.0);
@@ -725,7 +854,14 @@ fn main() {
                 player.position.y = newpos.y;
             }
             if !events.on_touch[0].type_eq(&SpellComponent::Nothing) {
-                player.activate_spell(&Spell { name: "event".to_string(), components: events.on_touch, cost: 0.0 }, &mut world);
+                player.activate_spell(
+                    &Spell {
+                        name: "event".to_string(),
+                        components: events.on_touch,
+                        cost: 0.0,
+                    },
+                    &mut world,
+                );
             }
         }
         if emptycount == 8 {
@@ -750,7 +886,14 @@ fn main() {
                 player.position.y = newpos.y;
             }
             if !events.on_touch[0].type_eq(&SpellComponent::Nothing) {
-                player.activate_spell(&Spell { name: "event".to_string(), components: events.on_touch, cost: 0.0 }, &mut world);
+                player.activate_spell(
+                    &Spell {
+                        name: "event".to_string(),
+                        components: events.on_touch,
+                        cost: 0.0,
+                    },
+                    &mut world,
+                );
             }
         }
 
@@ -772,7 +915,14 @@ fn main() {
                 player.position.x = newpos.x;
             }
             if !events.on_touch[0].type_eq(&SpellComponent::Nothing) {
-                player.activate_spell(&Spell { name: "event".to_string(), components: events.on_touch, cost: 0.0 }, &mut world);
+                player.activate_spell(
+                    &Spell {
+                        name: "event".to_string(),
+                        components: events.on_touch,
+                        cost: 0.0,
+                    },
+                    &mut world,
+                );
             }
         }
 
@@ -794,11 +944,21 @@ fn main() {
                 player.position.x = newpos.x;
             }
             if !events.on_touch[0].type_eq(&SpellComponent::Nothing) {
-                player.activate_spell(&Spell { name: "event".to_string(), components: events.on_touch, cost: 0.0 }, &mut world);
+                player.activate_spell(
+                    &Spell {
+                        name: "event".to_string(),
+                        components: events.on_touch,
+                        cost: 0.0,
+                    },
+                    &mut world,
+                );
             }
         }
 
-        if (rl.is_key_pressed(KeyboardKey::KEY_SPACE) || inputs.y < 0.0) && coyotetime > 0.0 && player.sp > 5.0 {
+        if (rl.is_key_pressed(KeyboardKey::KEY_SPACE) || inputs.y < 0.0)
+            && coyotetime > 0.0
+            && player.sp > 5.0
+        {
             vel.y -= 3.20;
             coyotetime = 0.0;
             player.sp -= 5.0;
@@ -816,31 +976,31 @@ fn main() {
         d2d.draw_player(&player);
         drop(d2d);
         // use d for drawing hud here
-        d.draw_fps(10, 10);
-        d.draw_text(
-            &(format!("{}, {}", player.position.x, player.position.y).as_str()),
-            10,
-            30,
-            20,
-            Color {
-                r: 0,
-                g: 179,
-                b: 0,
-                a: 255,
-            },
-        );
-        d.draw_text(
-            &(format!("{}, {}", vel.x, vel.y).as_str()),
-            10,
-            50,
-            20,
-            Color {
-                r: 0,
-                g: 179,
-                b: 0,
-                a: 255,
-            },
-        );
+        // d.draw_fps(10, 10);
+        // d.draw_text(
+        //     &(format!("{}, {}", player.position.x, player.position.y).as_str()),
+        //     10,
+        //     30,
+        //     20,
+        //     Color {
+        //         r: 0,
+        //         g: 179,
+        //         b: 0,
+        //         a: 255,
+        //     },
+        // );
+        // d.draw_text(
+        //     &(format!("{}, {}", vel.x, vel.y).as_str()),
+        //     10,
+        //     50,
+        //     20,
+        //     Color {
+        //         r: 0,
+        //         g: 179,
+        //         b: 0,
+        //         a: 255,
+        //     },
+        // );
         d.draw_hud(&world, &player, &active_spell);
         // world.sort_chunks();
         if world.modified {
@@ -856,14 +1016,3 @@ fn main() {
         jump_time += delta;
     }
 }
-
-/*0010 0010 0100 0010 0010 0101 0010 1010
-  1 
-  1 
- 1  
-  1 
-  1 
- 1 1
-  1 
-1 1 
-*/

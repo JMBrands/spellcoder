@@ -7,6 +7,7 @@ name = "Spellcoder"
 version = "0.1.0"
 dependencies = [
  "glob",
+ "interpolation",
  "jzon",
  "rand",
  "raylib",
@@ -211,6 +212,12 @@ checksum = "e3d1354bf6b7235cb4a0576c2619fd4ed18183f689b12b006a0ee7329eeff9a5"
 dependencies = [
  "windows-sys",
 ]
+
+[[package]]
+name = "interpolation"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9c13ae9d91148fcb4aab6654c4c2a7d02a15395ea9e23f65170f175f8b269ce"
 
 [[package]]
 name = "itertools"

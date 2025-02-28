@@ -1,0 +1,44 @@
+[
+  {
+    "name": "setpixel",
+    "components": [
+      {
+        "type": "setpixel",
+        "position": {
+          "x": 10,
+          "y": 0
+        },
+        "material": "block",
+        "color": "FF8000",
+        "events": {
+          "on_touch": [
+            {
+              "type": "damage",
+              "amount": 1.0,
+              "target": "other"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "setline",
+    "components": [
+      {
+        "type": "setline",
+        "start": {
+          "x": 8,
+          "y": 16
+        },
+        "end": {
+          "x": 32,
+          "y": 0
+        },
+        "material": "air",
+        "color": "0080FF",
+        "events": {}
+      }
+    ]
+  }
+]
