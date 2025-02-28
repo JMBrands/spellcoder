@@ -3,10 +3,9 @@ use glob::glob;
 use interpolation::{self, Ease, EaseFunction};
 use jzon::{object::Object, parse, JsonValue};
 use rand::prelude::*;
-use raylib::{ease::quad_in, prelude::*};
+use raylib::{ease::quad_in, ffi::Font, prelude::*};
 use std::{
-    fmt::{self, Debug},
-    fs::read_to_string,
+    arch::x86_64, fmt::{self, Debug}, fs::read_to_string
 };
 use worldgen::noise::{perlin::PerlinNoise, NoiseProvider};
 
@@ -20,19 +19,20 @@ enum PixelMaterial {
     BLOCK,
 }
 
-enum SpellComponent<'a> {
-    SetPixel(i32, i32, PixelMaterial, Color, Events<'a>),
-    Damage(&'a Player, f64),
+enum SpellComponent {
+    SetPixel(i64, i64, PixelMaterial, Color, Events),
+    Damage(*mut Player, f32),
     Nothing
 }
 
-struct Spell<'a> {
+struct Spell {
     name: String,
-    components: Vec<SpellComponent<'a>>,
+    components: Vec<SpellComponent>,
+    cost: f32,
 }
 
-struct Events<'a> {
-    on_touch: Vec<SpellComponent<'a>>,
+struct Events {
+    on_touch: Vec<SpellComponent>,
 }
 
 struct Player {
@@ -45,6 +45,9 @@ struct Player {
     max_mp: f32,
     max_hp: f32,
     max_sp: f32,
+    display_mp: f32,
+    display_hp: f32,
+    display_sp: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -80,7 +83,7 @@ trait WorldDraw {
     ) -> [::core::ops::Range<i64>; 2];
 }
 trait HUDDraw {
-    fn draw_hud(&mut self, world: &World, player: &Player);
+    fn draw_hud(&mut self, world: &World, player: &Player, active_spell: &Spell);
 }
 
 impl Player {
@@ -100,6 +103,9 @@ impl Player {
             max_mp: 100.0,
             max_hp: 100.0,
             max_sp: 100.0,
+            display_mp: 100.0,
+            display_hp: 100.0,
+            display_sp: 100.0,
         };
         // player.set_look_direction_vec2(Vector2 {
         //     x: 0.0,
@@ -113,6 +119,37 @@ impl Player {
         self.position = newpos;
         self.camera.target -= (self.camera.target / SCALE as f32 - self.position) / 3.0;
         // self.camera.offset += delta;
+    }
+
+    fn set_hp(&mut self, hp: f32) {
+        self.hp = hp.clamp(0.0, self.max_hp);
+    }
+
+    fn activate_spell(&mut self, spell: &Spell, world: &mut World) -> () {
+        if self.mp < spell.cost {
+            ()
+        } else {
+            self.mp -= spell.cost;
+            for component in &spell.components {
+                match component {
+                    SpellComponent::Damage(target, amount) => unsafe {(**target).set_hp((**target).hp - *amount)},
+                    SpellComponent::SetPixel(x_rel, y_rel, mat, color, events) => {
+                        let x = self.position.x as i64 + x_rel;
+                        let y = self.position.y as i64 + y_rel;
+                        world.set_pixel(x, y, Pixel { x: match (x % 16) as u8 {
+                            a if a < 16 => a,
+                            b if b > 240 => b - 240,
+                            e => panic!("no idea how this could happen, x % 16 is {}", e)
+                        }, y: match (y % 16) as u8 {
+                            a if a < 16 => a,
+                            b if b > 240 => b - 240,
+                            e => panic!("no idea how this could happen, y % 16 is {}", e)
+                        }, material: *mat, color: *color });
+                    },
+                    SpellComponent::Nothing => ()
+                }
+            }
+        }
     }
 }
 
@@ -195,24 +232,24 @@ impl WorldDraw for RaylibMode2D<'_, RaylibDrawHandle<'_>> {
 }
 
 impl HUDDraw for RaylibDrawHandle<'_> {
-    fn draw_hud(&mut self, world: &World, player: &Player) {
+    fn draw_hud(&mut self, world: &World, player: &Player, active_spell: &Spell) {
         let hpcol = Color {
-            r: 255 - (player.hp / player.max_hp * 255.0) as u8,
-            g: (player.hp / player.max_hp * 255.0) as u8,
+            r: 255 - (player.display_hp / player.max_hp * 255.0) as u8,
+            g: (player.display_hp / player.max_hp * 255.0) as u8,
             b: 0,
             a: 255,
         };
 
         let mpcol = Color {
             r: 0,
-            g: 0u8.max((player.mp / player.max_mp * 255.0 - 127.0) as u8),
-            b: (player.mp / player.max_mp * 191.0) as u8 + 64,
+            g: 0u8.max((player.display_mp / player.max_mp * 255.0 - 127.0) as u8),
+            b: (player.display_mp / player.max_mp * 191.0) as u8 + 64,
             a: 255,
         };
 
         let spcol = Color {
-            r: (player.sp / player.max_sp * 191.0) as u8 + 64,
-            g: (player.sp / player.max_sp * 191.0) as u8 + 64,
+            r: (player.display_sp / player.max_sp * 191.0) as u8 + 64,
+            g: (player.display_sp / player.max_sp * 191.0) as u8 + 64,
             b: 0,
             a: 255,
         };
@@ -234,24 +271,26 @@ impl HUDDraw for RaylibDrawHandle<'_> {
         self.draw_rectangle(
             (max_x * 0.03) as i32,
             (max_y * 0.86) as i32,
-            (max_x * 0.2 * player.hp / player.max_hp) as i32,
+            (max_x * 0.2 * player.display_hp / player.max_hp) as i32,
             (max_y * 0.025) as i32,
             hpcol,
         );
         self.draw_rectangle(
             (max_x * 0.03) as i32,
             (max_y * 0.90) as i32,
-            (max_x * 0.2 * player.mp / player.max_mp) as i32,
+            (max_x * 0.2 * player.display_mp / player.max_mp) as i32,
             (max_y * 0.025) as i32,
             mpcol,
         );
         self.draw_rectangle(
             (max_x * 0.03) as i32,
             (max_y * 0.94) as i32,
-            (max_x * 0.2 * player.sp / player.max_sp) as i32,
+            (max_x * 0.2 * player.display_sp / player.max_sp) as i32,
             (max_y * 0.025) as i32,
             spcol,
         );
+
+        self.draw_text(&active_spell.name.as_str(), 15, (max_y / 2.0) as i32, 35, prelude::Color::BLACK);
     }
 }
 
@@ -378,6 +417,14 @@ impl Chunk {
             Err(i) => Err(i),
         }
     }
+
+    fn set_pixel(&mut self, pixel: Pixel) {
+        println!("{}, {}", pixel.x, pixel.x as usize);
+        match self.pixels[pixel.x as usize].binary_search_by(|a| (a.y).cmp(&(pixel.y as u8))) {
+            Ok(i) => self.pixels[pixel.x as usize][i] = pixel,
+            Err(i) => self.add_pixel(pixel),
+        }
+    }
 }
 
 impl World {
@@ -414,7 +461,7 @@ impl World {
         self.modified = false;
     }
 
-    fn get_chunk(&mut self, x: i64, y: i64) -> &Chunk {
+    fn get_chunk(&mut self, x: i64, y: i64) -> &mut Chunk {
         let row = match self.chunks.binary_search_by(|r| r[0].y.cmp(&(y * 16))) {
             Ok(r) => r,
             Err(_) => {
@@ -431,7 +478,7 @@ impl World {
                 self.chunks[row].len() - 1
             }
         };
-        &self.chunks[row][col]
+        &mut self.chunks[row][col]
     }
 
     fn get_pixel(&mut self, x: i64, y: i64) -> &Pixel {
@@ -442,34 +489,48 @@ impl World {
             Err(_) => panic!("pixel not found! (how?)"),
         }
     }
+
+    fn set_pixel(&mut self, x: i64, y: i64, pixel: Pixel) {
+        let chunk = self.get_chunk(x >> 4, y >> 4);
+        println!("{}", pixel.x);
+        chunk.set_pixel(pixel);
+    }
 }
 
-fn parse_components<'a>(components: &mut Vec<SpellComponent<'a>>, json: &JsonValue, player: &'a Player) {
+fn parse_components<'a>(components: &mut Vec<SpellComponent>, json: &JsonValue, player: &mut Player) -> f32 {
+    let mut cost = 0f32;
     for comp in json.as_array().unwrap() {
         components.push(match comp["type"].as_str().unwrap() {
-            "setpixel" => SpellComponent::SetPixel(
-                comp["position"]["x"].as_i32().unwrap(),
-                comp["position"]["y"].as_i32().unwrap(),
-                match comp["material"].as_str().unwrap() {
-                    "air" => PixelMaterial::AIR,
-                    "block" => PixelMaterial::BLOCK,
-                    _ => PixelMaterial::AIR,
-                },
-                prelude::Color::from_hex(comp["color"].as_str().unwrap()).unwrap().into(),
-                Events { on_touch: 
-                    if comp["events"].has_key("on_touch") {
-                        let mut tch_comps = Vec::new() as Vec<SpellComponent>;
-                        parse_components(&mut tch_comps, &comp["events"]["on_touch"], player);
-                        tch_comps
-                    } else {
-                        vec![SpellComponent::Nothing]
+            "setpixel" => {
+                cost += 16.0;
+                SpellComponent::SetPixel(
+                    comp["position"]["x"].as_i64().unwrap(),
+                    comp["position"]["y"].as_i64().unwrap(),
+                    match comp["material"].as_str().unwrap() {
+                        "air" => PixelMaterial::AIR,
+                        "block" => PixelMaterial::BLOCK,
+                        _ => PixelMaterial::AIR,
+                    },
+                    prelude::Color::from_hex(comp["color"].as_str().unwrap()).unwrap().into(),
+                    Events { on_touch: 
+                        if comp["events"].has_key("on_touch") {
+                            let mut tch_comps = Vec::new() as Vec<SpellComponent>;
+                            cost += parse_components(&mut tch_comps, &comp["events"]["on_touch"], player) * 1.5;
+                            tch_comps
+                        } else {
+                            vec![SpellComponent::Nothing]
+                        }
                     }
-                }
-            ),
-            "damage" => SpellComponent::Damage(player, comp["amount"].as_f64().unwrap()),
+                )
+            },
+            "damage" => {
+                cost += comp["amount"].as_f32().unwrap() * 8.0;
+                SpellComponent::Damage(player, comp["amount"].as_f32().unwrap())
+            },
             _ => SpellComponent::Nothing
         });
     }
+    cost
 }
 
 fn main() {
@@ -501,10 +562,11 @@ fn main() {
                 for s in sp.as_array().unwrap() {
                     // println!("{:#?}", s["components"][0]["position"]["x"]);
                     let mut components = Vec::new() as Vec<SpellComponent>;
-                    parse_components(&mut components, &s["components"], &player);
+                    let cost = parse_components(&mut components, &s["components"], &mut player);
                     spells.push(Spell {
                         name: String::from(s["name"].as_str().unwrap()),
-                        components
+                        components,
+                        cost
                     });
                 }
             }
@@ -518,16 +580,19 @@ fn main() {
     // println!("{:?}", world.chunks[0].voxels);
     // mainloop
     let mut vel = Vector2::zero();
+    let mut active_index = 0usize;
+    let mut active_spell = &spells[active_index];
+    let mut jump_time = 0.0;
     // let mut screen_dim = Vector2 {x: }
     println!("MAINLOOP STARTING");
     let mut screendim = Vector2 {
         x: rl.get_screen_width() as f32,
         y: rl.get_screen_height() as f32,
     };
-    let mut coyoteframes = 10;
+    let mut coyotetime = 0.1;
     while !rl.window_should_close() {
         if vel.y == 0.0 {
-            coyoteframes = 5;
+            coyotetime = 0.1;
         }
         let width = rl.get_screen_width() as f32;
         if screendim.x != width {
@@ -558,25 +623,49 @@ fn main() {
         }
 
         if rl.is_key_down(KeyboardKey::KEY_P) {
-            player.hp = player.max_hp.min(player.hp + 0.3);
+            player.hp = player.max_hp.min(player.hp + 3.0);
         }
         if rl.is_key_down(KeyboardKey::KEY_O) {
-            player.hp = 0f32.max(player.hp - 0.3);
+            player.hp = 0f32.max(player.hp - 3.0);
         }
 
         if rl.is_key_down(KeyboardKey::KEY_L) {
-            player.mp = player.max_mp.min(player.mp + 0.3);
+            player.mp = player.max_mp.min(player.mp + 3.0);
         }
         if rl.is_key_down(KeyboardKey::KEY_K) {
-            player.mp = 0f32.max(player.mp - 0.3);
+            player.mp = 0f32.max(player.mp - 3.0);
         }
 
         if rl.is_key_down(KeyboardKey::KEY_M) {
-            player.sp = player.max_sp.min(player.sp + 0.3);
+            player.sp = player.max_sp.min(player.sp + 3.0);
         }
         if rl.is_key_down(KeyboardKey::KEY_N) {
-            player.sp = 0f32.max(player.sp - 0.3);
+            player.sp = 0f32.max(player.sp - 3.0);
         }
+
+        if rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            player.activate_spell(active_spell, &mut world);
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_DOWN) {
+            if active_index == 0 {
+                active_index = spells.len() - 1;
+            } else {
+                active_index -= 1;
+            }
+            active_spell = &spells[active_index];
+        }
+        if rl.is_key_pressed(KeyboardKey::KEY_UP) {
+            if active_index == spells.len() - 1 {
+                active_index = 0;
+            } else {
+                active_index += 1;
+            }
+            active_spell = &spells[active_index];
+        }
+
+        player.display_hp = lerp(player.display_hp, player.hp, 0.1);
+        player.display_mp = lerp(player.display_mp, player.mp, 0.1);
+        player.display_sp = lerp(player.display_sp, player.sp, 0.1);
 
         vel.x = inputs.x * SPEED;
         let mut newpos = player.position + delta;
@@ -658,9 +747,11 @@ fn main() {
             }
         }
 
-        if (rl.is_key_pressed(KeyboardKey::KEY_SPACE) || inputs.y < 0.0) && coyoteframes > 0 {
+        if (rl.is_key_pressed(KeyboardKey::KEY_SPACE) || inputs.y < 0.0) && coyotetime > 0.0 && player.sp > 5.0 {
             vel.y -= 3.20;
-            coyoteframes = 0;
+            coyotetime = 0.0;
+            player.sp -= 5.0;
+            jump_time = 0.0;
         }
 
         player.move_self(vel);
@@ -699,11 +790,29 @@ fn main() {
                 a: 255,
             },
         );
-        d.draw_hud(&world, &player);
+        d.draw_hud(&world, &player, &active_spell);
         // world.sort_chunks();
         if world.modified {
             world.sort_chunks();
         }
-        coyoteframes = 0i32.max(coyoteframes - 1);
+        if player.mp < player.max_mp {
+            player.mp = (player.mp + 2.0 * delta).min(player.max_mp);
+        }
+        if player.sp < player.max_sp && jump_time > 2.0 {
+            player.sp = (player.sp + 35.0 * delta).min(player.max_sp);
+        }
+        coyotetime = 0f32.max(coyotetime - delta);
+        jump_time += delta;
     }
 }
+
+/*0010 0010 0100 0010 0010 0101 0010 1010
+  1 
+  1 
+ 1  
+  1 
+  1 
+ 1 1
+  1 
+1 1 
+*/
