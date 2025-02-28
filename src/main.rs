@@ -13,24 +13,26 @@ const SPEED: f32 = 2.0;
 const SCALE: i32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[repr(C)]
 enum PixelMaterial {
     AIR,
     BLOCK,
 }
 
+#[derive(Debug, Clone)]
 enum SpellComponent {
     SetPixel(i64, i64, PixelMaterial, Color, Events),
     Damage(*mut Player, f32),
     Nothing
 }
 
+#[derive(Debug)]
 struct Spell {
     name: String,
     components: Vec<SpellComponent>,
     cost: f32,
 }
 
+#[derive(Debug, Clone)]
 struct Events {
     on_touch: Vec<SpellComponent>,
 }
@@ -50,12 +52,13 @@ struct Player {
     display_sp: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Pixel {
     x: u8, // first nibble for x, second nibble for z
     y: u8,
     material: PixelMaterial,
     color: ffi::Color,
+    events: Events
 }
 
 struct Chunk {
@@ -84,6 +87,30 @@ trait WorldDraw {
 }
 trait HUDDraw {
     fn draw_hud(&mut self, world: &World, player: &Player, active_spell: &Spell);
+}
+
+impl SpellComponent {
+    fn type_eq(&self, other: &SpellComponent) -> bool {
+        match self {
+            Self::SetPixel(_, _, _, _, _) => {
+                match other {
+                    Self::SetPixel(_, _, _, _, _) => return true,
+                    Self::Damage(_a, _b) => return false,
+                    Self::Nothing => return false,
+                }
+            },
+            Self::Damage(_, _) => match other {
+                Self::Damage(_, _) => return true,
+                Self::SetPixel(_, _, _, _, _) => return false,
+                Self::Nothing => return false,
+            },
+            Self::Nothing => match other {
+                SpellComponent::SetPixel(_, _, _, _, _) => return false,
+                SpellComponent::Damage(_, _) => return false,
+                SpellComponent::Nothing => return true,
+            }
+        }
+    }
 }
 
 impl Player {
@@ -126,13 +153,14 @@ impl Player {
     }
 
     fn activate_spell(&mut self, spell: &Spell, world: &mut World) -> () {
+        println!("{:#?}", spell);
         if self.mp < spell.cost {
             ()
         } else {
             self.mp -= spell.cost;
             for component in &spell.components {
                 match component {
-                    SpellComponent::Damage(target, amount) => unsafe {(**target).set_hp((**target).hp - *amount)},
+                    SpellComponent::Damage(target, amount) => unsafe {(self).set_hp((self).hp - *amount)},
                     SpellComponent::SetPixel(x_rel, y_rel, mat, color, events) => {
                         let x = self.position.x as i64 + x_rel;
                         let y = self.position.y as i64 + y_rel;
@@ -144,7 +172,9 @@ impl Player {
                             a if a < 16 => a,
                             b if b > 240 => b - 240,
                             e => panic!("no idea how this could happen, y % 16 is {}", e)
-                        }, material: *mat, color: *color });
+                        }, material: *mat, color: *color,
+                        events: events.clone()
+                    });
                     },
                     SpellComponent::Nothing => ()
                 }
@@ -339,6 +369,7 @@ impl Chunk {
                             material: PixelMaterial::BLOCK,
                             x: x as u8,
                             y: y as u8,
+                            events: Events { on_touch: vec![SpellComponent::Nothing] }
                         });
                     }
                     val if val > 64.0 / 256.0 => {
@@ -359,6 +390,7 @@ impl Chunk {
                             material: PixelMaterial::BLOCK,
                             x: x as u8,
                             y: y as u8,
+                            events: Events { on_touch: vec![SpellComponent::Nothing] }
                         });
                     }
                     val if val < 64.0 / 256.0 => {
@@ -379,6 +411,7 @@ impl Chunk {
                             material: PixelMaterial::AIR,
                             x: x as u8,
                             y: y as u8,
+                            events: Events { on_touch: vec![SpellComponent::Nothing] }
                         });
                     }
                     _ => {
@@ -393,6 +426,7 @@ impl Chunk {
                             x: x as u8,
                             y: y as u8,
                             material: PixelMaterial::AIR,
+                            events: Events { on_touch: vec![SpellComponent::Nothing] }
                         });
                     }
                 }
@@ -420,8 +454,9 @@ impl Chunk {
 
     fn set_pixel(&mut self, pixel: Pixel) {
         println!("{}, {}", pixel.x, pixel.x as usize);
+        let x = pixel.clone().x;
         match self.pixels[pixel.x as usize].binary_search_by(|a| (a.y).cmp(&(pixel.y as u8))) {
-            Ok(i) => self.pixels[pixel.x as usize][i] = pixel,
+            Ok(i) => self.pixels[x as usize][i] = pixel,
             Err(i) => self.add_pixel(pixel),
         }
     }
@@ -672,6 +707,7 @@ fn main() {
         let mut emptycount = 0;
         for x in (newpos.x as i64)..(newpos.x as i64 + 8) {
             let bottompx = world.get_pixel(x, newpos.y as i64 + 16);
+            let events = bottompx.events.clone();
             if bottompx.material == PixelMaterial::AIR {
                 emptycount += 1;
             } else {
@@ -688,6 +724,9 @@ fn main() {
                 }
                 player.position.y = newpos.y;
             }
+            if !events.on_touch[0].type_eq(&SpellComponent::Nothing) {
+                player.activate_spell(&Spell { name: "event".to_string(), components: events.on_touch, cost: 0.0 }, &mut world);
+            }
         }
         if emptycount == 8 {
             vel.y += 9.81 * delta;
@@ -695,6 +734,7 @@ fn main() {
 
         for x in (newpos.x as i64)..(newpos.x as i64 + 8) {
             let bottompx = world.get_pixel(x, newpos.y as i64);
+            let events = bottompx.events.clone();
             if bottompx.material != PixelMaterial::AIR {
                 let mut toppx = bottompx;
                 let mut y = newpos.y as i64;
@@ -709,10 +749,14 @@ fn main() {
                 }
                 player.position.y = newpos.y;
             }
+            if !events.on_touch[0].type_eq(&SpellComponent::Nothing) {
+                player.activate_spell(&Spell { name: "event".to_string(), components: events.on_touch, cost: 0.0 }, &mut world);
+            }
         }
 
         for y in (newpos.y as i64)..(newpos.y as i64 + 12) {
             let bottompx = world.get_pixel(newpos.x as i64, y);
+            let events = bottompx.events.clone();
             if bottompx.material != PixelMaterial::AIR {
                 let mut toppx = bottompx;
                 let mut x = newpos.x as i64;
@@ -727,10 +771,14 @@ fn main() {
                 }
                 player.position.x = newpos.x;
             }
+            if !events.on_touch[0].type_eq(&SpellComponent::Nothing) {
+                player.activate_spell(&Spell { name: "event".to_string(), components: events.on_touch, cost: 0.0 }, &mut world);
+            }
         }
 
         for y in (newpos.y as i64)..(newpos.y as i64 + 12) {
             let bottompx = world.get_pixel(newpos.x as i64 + 8, y);
+            let events = bottompx.events.clone();
             if bottompx.material != PixelMaterial::AIR {
                 let mut toppx = bottompx;
                 let mut x = newpos.x as i64 + 8;
@@ -744,6 +792,9 @@ fn main() {
                     newpos.x = x as f32 + 5.0;
                 }
                 player.position.x = newpos.x;
+            }
+            if !events.on_touch[0].type_eq(&SpellComponent::Nothing) {
+                player.activate_spell(&Spell { name: "event".to_string(), components: events.on_touch, cost: 0.0 }, &mut world);
             }
         }
 
